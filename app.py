@@ -157,6 +157,7 @@ def dashboard():
     c = cfg()
     report_albums = core.get_report_albums(state, c["days_lookback"])
     excluded_albums = core.get_excluded_albums(state)
+    upcoming_albums = core.get_upcoming_albums(state)
 
     return render_template(
         "dashboard.html",
@@ -164,6 +165,7 @@ def dashboard():
         playlist_id=c["spotify_playlist_id"],
         report_albums=report_albums,
         excluded_albums=excluded_albums,
+        upcoming_albums=upcoming_albums,
         in_progress=state.get("in_progress"),
         rate_limits={
             cat: format_rate_limit_until(ts)
@@ -287,6 +289,49 @@ def set_override(album_id):
     state = core.update_state(_mutate)
     if album_id not in state.get("known_albums", {}):
         return "Unknown album", 404
+
+    c = cfg()
+    playlist_id = c.get("spotify_playlist_id")
+    if not playlist_id:
+        return redirect(url_for("dashboard"))
+
+    client_id, client_secret = _get_creds()
+    refresh_token = core.load_refresh_token()
+    if not all([client_id, client_secret, refresh_token]):
+        return redirect(url_for("dashboard"))
+
+    album = state["known_albums"].get(album_id)
+    try:
+        token = core.get_access_token(client_id, client_secret, refresh_token)
+        if value == "true" and album.get("added_to_playlist"):
+            track_uris = album.get("track_uris")
+            if not track_uris:
+                track_uris = core.get_album_track_uris(token, album_id, state)
+            if track_uris:
+                core.remove_tracks_from_playlist(token, playlist_id, track_uris, state)
+                core.log(f"Removed {len(track_uris)} track(s) from '{album['name']}' (manually excluded)")
+                def _mark_removed(state):
+                    a = state.get("known_albums", {}).get(album_id)
+                    if a:
+                        a["added_to_playlist"] = False
+                        a["track_uris"] = []
+                    return state
+                core.update_state(_mark_removed)
+        elif value == "false":
+            track_uris = core.get_album_track_uris(token, album_id, state)
+            if track_uris:
+                core.add_tracks_to_playlist(token, playlist_id, track_uris, state)
+                core.log(f"Added {len(track_uris)} track(s) from '{album['name']}' (re-included)")
+                def _mark_added(state):
+                    a = state.get("known_albums", {}).get(album_id)
+                    if a:
+                        a["added_to_playlist"] = True
+                        a["track_uris"] = track_uris
+                    return state
+                core.update_state(_mark_added)
+    except Exception as e:
+        core.log(f"WARNING: Override saved but playlist update failed: {e}")
+
     return redirect(url_for("dashboard"))
 
 

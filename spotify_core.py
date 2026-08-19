@@ -86,7 +86,7 @@ def is_configured():
 
 
 _ID_SEGMENT = re.compile(r"/[A-Za-z0-9]{15,}(?=/|$)")
-PAREN_PATTERN = re.compile(r"\(.*?\)\s*$")
+PAREN_PATTERN = re.compile(r"(?:\(.*?\)|\[.*?\])\s*$")
 
 # Serializes scan runs so the scheduler and a manual "Run now" click can
 # never overlap.
@@ -473,6 +473,23 @@ def get_excluded_albums(state):
     return result
 
 
+def get_upcoming_albums(state):
+    today = datetime.now().date()
+    result = []
+    for album_id, album in state.get("known_albums", {}).items():
+        if is_effectively_excluded(album):
+            continue
+        release_date = parse_release_date(album["release_date"])
+        if release_date is None:
+            continue
+        if release_date.date() > today:
+            entry = dict(album)
+            entry["id"] = album_id
+            result.append(entry)
+    result.sort(key=lambda a: parse_release_date(a["release_date"]))
+    return result
+
+
 # --- Spotify API calls ---------------------------------------------------
 
 def get_followed_artists(token, state):
@@ -772,11 +789,13 @@ def run_scan(days=None, interval_days=None, min_request_interval=None, market="U
                             if release_date and release_date < cutoff:
                                 continue
 
+                            is_unreleased = release_date and release_date.date() > datetime.now().date()
+
                             existing_entry = state["known_albums"].get(album["id"])
                             needs_playlist_add = existing_entry is None or not existing_entry.get("added_to_playlist", False)
                             record_album(state, artist, album, now_iso)
                             entry = state["known_albums"][album["id"]]
-                            if needs_playlist_add and not is_effectively_excluded(entry) and playlist_id:
+                            if needs_playlist_add and not is_effectively_excluded(entry) and playlist_id and not is_unreleased:
                                 try:
                                     track_uris = get_album_track_uris(token, album["id"], state)
                                     add_tracks_to_playlist(token, playlist_id, track_uris, state)

@@ -38,6 +38,15 @@ class IsAutoExcludedTests(unittest.TestCase):
     def test_mid_string_parenthetical_not_trailing(self):
         self.assertFalse(core.is_auto_excluded("Song (feat. Artist) - Single"))
 
+    def test_trailing_square_brackets(self):
+        self.assertTrue(core.is_auto_excluded("Album Name [Deluxe Edition]"))
+
+    def test_trailing_square_brackets_whitespace(self):
+        self.assertTrue(core.is_auto_excluded("Album Name [Live] "))
+
+    def test_mid_string_bracket_not_trailing(self):
+        self.assertFalse(core.is_auto_excluded("Song [feat. Artist] - Single"))
+
 
 class IsEffectivelyExcludedTests(unittest.TestCase):
     def test_auto_excluded_no_override(self):
@@ -110,6 +119,75 @@ class GetExcludedAlbumsTests(unittest.TestCase):
         result = core.get_excluded_albums(state)
         self.assertEqual(len(result), 1)
         self.assertIn("id", result[0])
+
+
+class GetUpcomingAlbumsTests(unittest.TestCase):
+    def _future(self, days):
+        return (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+
+    def test_returns_future_albums_only(self):
+        state = {
+            "known_albums": {
+                "a1": {"name": "Future", "artist": "X", "release_date": self._future(30),
+                       "auto_excluded": False},
+                "a2": {"name": "Past", "artist": "Y", "release_date": "2020-01-01",
+                       "auto_excluded": False},
+                "a3": {"name": "Today", "artist": "Z",
+                       "release_date": datetime.now().strftime("%Y-%m-%d"),
+                       "auto_excluded": False},
+            }
+        }
+        result = core.get_upcoming_albums(state)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["name"], "Future")
+
+    def test_excludes_excluded_albums(self):
+        state = {
+            "known_albums": {
+                "a1": {"name": "Future (Live)", "artist": "X", "release_date": self._future(10),
+                       "auto_excluded": True},
+                "a2": {"name": "Future", "artist": "Y", "release_date": self._future(20),
+                       "auto_excluded": False},
+            }
+        }
+        result = core.get_upcoming_albums(state)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["name"], "Future")
+
+    def test_manual_override_not_excluded(self):
+        state = {
+            "known_albums": {
+                "a1": {"name": "Future (Live)", "artist": "X", "release_date": self._future(10),
+                       "auto_excluded": True, "manual_override": False},
+            }
+        }
+        result = core.get_upcoming_albums(state)
+        self.assertEqual(len(result), 1)
+
+    def test_includes_id_field(self):
+        state = {
+            "known_albums": {
+                "a1": {"name": "Future", "artist": "X", "release_date": self._future(5),
+                       "auto_excluded": False},
+            }
+        }
+        result = core.get_upcoming_albums(state)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["id"], "a1")
+
+    def test_sorts_soonest_first(self):
+        state = {
+            "known_albums": {
+                "a1": {"name": "Far", "artist": "X", "release_date": self._future(60),
+                       "auto_excluded": False},
+                "a2": {"name": "Soon", "artist": "Y", "release_date": self._future(5),
+                       "auto_excluded": False},
+            }
+        }
+        result = core.get_upcoming_albums(state)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["name"], "Soon")
+        self.assertEqual(result[1]["name"], "Far")
 
 
 class RecordAlbumTests(unittest.TestCase):

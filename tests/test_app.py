@@ -4,6 +4,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -97,6 +98,44 @@ class AppRoutesTests(unittest.TestCase):
         self._write_token()
         response = self.client.get("/")
         self.assertIn(b"Connected", response.data)
+
+    def test_dashboard_shows_upcoming_when_future_albums_exist(self):
+        future_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+        state = {
+            "artists": {},
+            "known_albums": {
+                "u1": {"name": "Forthcoming", "artist": "Test Artist",
+                       "artist_id": "art1", "type": "album",
+                       "release_date": future_date,
+                       "url": "https://open.spotify.com/album/u1",
+                       "total_tracks": 10, "first_seen": "2026-08-01T00:00:00+00:00",
+                       "auto_excluded": False, "manual_override": None,
+                       "added_to_playlist": False, "track_uris": []},
+            }
+        }
+        with open(core.STATE_FILE, "w") as f:
+            json.dump(state, f)
+        response = self.client.get("/")
+        self.assertIn(b"Upcoming releases", response.data)
+        self.assertIn(b"Forthcoming", response.data)
+
+    def test_dashboard_hides_upcoming_when_no_future_albums(self):
+        state = {
+            "artists": {},
+            "known_albums": {
+                "a1": {"name": "Past Album", "artist": "Test Artist",
+                       "artist_id": "art1", "type": "album",
+                       "release_date": "2020-01-01",
+                       "url": "https://open.spotify.com/album/a1",
+                       "total_tracks": 10, "first_seen": "2026-08-01T00:00:00+00:00",
+                       "auto_excluded": False, "manual_override": None,
+                       "added_to_playlist": False, "track_uris": []},
+            }
+        }
+        with open(core.STATE_FILE, "w") as f:
+            json.dump(state, f)
+        response = self.client.get("/")
+        self.assertNotIn(b"Upcoming releases", response.data)
 
     # --- settings ------------------------------------------------------------
 

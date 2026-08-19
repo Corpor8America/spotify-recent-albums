@@ -162,6 +162,15 @@ class IsAutoExcludedTests(unittest.TestCase):
     def test_mid_string_parenthetical_not_trailing(self):
         self.assertFalse(MODULE.is_auto_excluded("Album Name (Part One) - Bonus Track"))
 
+    def test_trailing_square_brackets(self):
+        self.assertTrue(MODULE.is_auto_excluded("Album Name [Deluxe Edition]"))
+
+    def test_trailing_square_brackets_whitespace(self):
+        self.assertTrue(MODULE.is_auto_excluded("Album Name [Live] "))
+
+    def test_mid_string_bracket_not_trailing(self):
+        self.assertFalse(MODULE.is_auto_excluded("Album Name [Part One] - Bonus Track"))
+
 
 class IsEffectivelyExcludedTests(unittest.TestCase):
     def test_auto_excluded_no_override(self):

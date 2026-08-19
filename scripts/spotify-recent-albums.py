@@ -106,7 +106,7 @@ def log(message):
     print(message, flush=True)
 
 
-PAREN_PATTERN = re.compile(r"\(.*?\)\s*$")
+PAREN_PATTERN = re.compile(r"(?:\(.*?\)|\[.*?\])\s*$")
 
 
 def is_auto_excluded(album_name):

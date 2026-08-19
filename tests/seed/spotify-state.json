@@ -2,83 +2,83 @@
   "artists": {
     "artist0000": {
       "name": "Test Artist 0",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0001": {
       "name": "Test Artist 1",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0002": {
       "name": "Test Artist 2",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0003": {
       "name": "Test Artist 3",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0004": {
       "name": "Test Artist 4",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0005": {
       "name": "Test Artist 5",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0006": {
       "name": "Test Artist 6",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0007": {
       "name": "Test Artist 7",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0008": {
       "name": "Test Artist 8",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0009": {
       "name": "Test Artist 9",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0010": {
       "name": "Test Artist 10",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0011": {
       "name": "Test Artist 11",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0012": {
       "name": "Test Artist 12",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0013": {
       "name": "Test Artist 13",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0014": {
       "name": "Test Artist 14",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0015": {
       "name": "Test Artist 15",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0016": {
       "name": "Test Artist 16",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0017": {
       "name": "Test Artist 17",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0018": {
       "name": "Test Artist 18",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     },
     "artist0019": {
       "name": "Test Artist 19",
-      "last_checked": "2026-08-05T02:28:04.656455+00:00"
+      "last_checked": "2026-08-19T02:20:46.017281+00:00"
     }
   },
   "known_albums": {
@@ -90,7 +90,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0000_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -115,7 +115,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0001_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -137,10 +137,10 @@
       "artist_id": "artist0002",
       "name": "Album 0 by Artist 2",
       "type": "album",
-      "release_date": "2026-05-01",
+      "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0002_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -165,7 +165,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0003_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -190,7 +190,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0004_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -215,7 +215,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0005_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -240,7 +240,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0006_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -265,7 +265,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0007_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -290,7 +290,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0008_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -315,7 +315,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0009_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -340,7 +340,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0010_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -365,7 +365,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0011_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -390,7 +390,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0012_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -415,7 +415,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0013_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -440,7 +440,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0014_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -465,7 +465,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0015_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -490,7 +490,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0016_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -515,7 +515,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0017_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -540,7 +540,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0018_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -565,7 +565,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_artist0019_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-05T02:28:04.656455+00:00",
+      "first_seen": "2026-08-19T02:20:46.017281+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,

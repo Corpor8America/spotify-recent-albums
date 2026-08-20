@@ -365,6 +365,7 @@ def artists_list():
         return redirect(url_for("settings"))
     state = core.load_state()
     raw_artists = state.get("artists", {})
+    due_ids = set(state.get("in_progress", {}).get("due_ids", [])) if state.get("in_progress") else set()
     artists = sorted(
         [
             {
@@ -372,12 +373,84 @@ def artists_list():
                 "name": info.get("name", aid),
                 "last_checked": info.get("last_checked", ""),
                 "last_checked_display": _format_last_checked(info.get("last_checked", "")),
+                "scanned_with": info.get("scanned_with", ""),
+                "is_due": aid in due_ids,
+                "is_processed": state.get("in_progress") is not None and aid not in due_ids,
             }
             for aid, info in raw_artists.items()
         ],
         key=lambda a: a["name"].lower(),
     )
-    return render_template("artists.html", artists=artists, version=version())
+    scan_running = core.run_lock.locked()
+    return render_template("artists.html", artists=artists, version=version(), scan_running=scan_running, scan_in_progress=state.get("in_progress") is not None)
+
+
+# --- Debug / Artist Inspector ------------------------------------------------
+
+@app.route("/debug/artist", methods=["GET", "POST"])
+def debug_artist():
+    if not core.is_configured():
+        return redirect(url_for("settings"))
+
+    result = None
+    error = None
+    artist_input = ""
+
+    if request.method == "POST":
+        artist_input = (request.form.get("artist_input") or "").strip()
+
+        match = re.search(r"open\.spotify\.com/artist/([A-Za-z0-9]+)", artist_input)
+        if match:
+            artist_id = match.group(1)
+        elif re.fullmatch(r"[A-Za-z0-9]{22}", artist_input):
+            artist_id = artist_input
+        else:
+            error = "Enter a Spotify artist ID (22-char alphanumeric) or a full Spotify artist URL."
+            return render_template("debug_artist.html", artist_input=artist_input, result=result, error=error, version=version())
+
+        try:
+            client_id, client_secret = _get_creds()
+            refresh_token = core.load_refresh_token()
+            token = core.get_access_token(client_id, client_secret, refresh_token)
+            state = core.load_state()
+
+            artist_name = artist_id
+            try:
+                artist_data = core.spotify_get(token, f"{core.SPOTIFY_API_BASE}/artists/{artist_id}", state)
+                artist_name = artist_data.get("name", artist_id)
+            except Exception:
+                pass
+
+            albums = core.get_artist_albums(token, artist_id, state)
+            parsed = []
+            for a in albums:
+                rd = core.parse_release_date(a.get("release_date", ""))
+                now_date = datetime.now().date()
+                is_future = rd is not None and rd.date() > now_date
+                known = state.get("known_albums", {}).get(a["id"])
+                parsed.append({
+                    "id": a["id"],
+                    "name": a.get("name"),
+                    "album_type": a.get("album_type"),
+                    "release_date": a.get("release_date"),
+                    "parsed_date": rd.strftime("%Y-%m-%d") if rd else "N/A",
+                    "total_tracks": a.get("total_tracks"),
+                    "is_future": is_future,
+                    "in_state": known is not None,
+                    "url": a.get("external_urls", {}).get("spotify", ""),
+                    "artists": ", ".join(ar.get("name", "?") for ar in a.get("artists", [])),
+                    "raw": {k: a[k] for k in ("id", "name", "album_type", "release_date", "total_tracks") if k in a},
+                })
+            result = {
+                "artist_name": artist_name,
+                "artist_id": artist_id,
+                "album_count": len(parsed),
+                "albums": parsed,
+            }
+        except Exception as e:
+            error = f"API error: {e}"
+
+    return render_template("debug_artist.html", artist_input=artist_input, result=result, error=error, version=version())
 
 
 # --- Status API --------------------------------------------------------------

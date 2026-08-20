@@ -26,13 +26,20 @@ In the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard):
 
 Pick a compose profile:
 
-- **Production** (default, host port `8081`, pulls the published image from
-  GHCR — no local build): `docker compose up -d`
+- **Production** (default, pulls the published image from GHCR — no local
+  build). Serves HTTPS on port `8443` through a Caddy reverse proxy, so it
+  works from any device on your LAN: `docker compose up -d`
 - **Local** (host port `8080`, separate `spotify_local_data` volume, so its
   state never collides with production):
   `docker compose -f docker-compose.local.yml up -d --build`
 - **Dev / mock Spotify** (no real API calls, seeds from `tests/seed`):
   `docker compose -f docker-compose.dev.yml up -d --build`
+
+No environment variables or `.env` file are needed — Caddy serves HTTPS with
+its own internal CA and issues a certificate on demand for whatever host/IP you
+connect from. (Spotify only accepts plain `http://` redirect URIs for
+`localhost`/`127.0.0.1` — any other host, including a LAN IP, must be
+`https://`.)
 
 No environment variables are needed — everything is configured on the Settings
 page. Then open the **Settings** page (`/settings`) and fill in:
@@ -54,9 +61,22 @@ nothing else to configure.
 
 ## 3. Connect
 
-Open the app in a browser (http://127.0.0.1:8081 for the production compose,
-http://127.0.0.1:8080 for the local one), click **Connect Spotify account**, and
-authorize. The refresh token is saved to the same volume as the app state
+For **production**: the Spotify app's Redirect URI must be
+`https://<your-LAN-IP>:8443/callback`. Trust Caddy's CA on each device you'll
+browse from (one-time), so the HTTPS cert doesn't show a warning:
+
+```bash
+# export Caddy's internal CA root cert, then install it as a trusted root on each device
+docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt > caddy-root.crt
+```
+
+Then open `https://<your-LAN-IP>:8443` on any device, click **Connect Spotify
+account**, and authorize.
+
+For the **local** compose: open `http://127.0.0.1:8080` and register
+`http://127.0.0.1:8080/callback` as the Redirect URI instead.
+
+The refresh token is saved to the same volume as the app state
 (`/data/spotify-token.json`) so you only do this once — it survives container
 restarts/rebuilds as long as the volume isn't deleted.
 

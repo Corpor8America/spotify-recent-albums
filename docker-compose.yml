@@ -1,9 +1,24 @@
 services:
+  caddy:
+    image: caddy:2
+    container_name: recent-albums-caddy
+    ports:
+      - "8443:8443"
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    volumes:
+      - caddy_data:/data
+    depends_on:
+      spotify-recent-albums:
+        condition: service_healthy
+    restart: unless-stopped
+
   spotify-recent-albums:
     image: ghcr.io/corpor8america/spotify-recent-albums:latest
     container_name: recent-albums
-    ports:
-      - "8081:8080"
+    expose:
+      - "8080"
     volumes:
       - spotify_data:/data
     healthcheck:
@@ -24,5 +39,16 @@ services:
         max-file: "3"
     restart: unless-stopped
 
+configs:
+  caddyfile:
+    content: |
+      https://:8443 {
+        tls internal {
+          on_demand
+        }
+        reverse_proxy spotify-recent-albums:8080
+      }
+
 volumes:
   spotify_data:
+  caddy_data:

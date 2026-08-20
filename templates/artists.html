@@ -13,6 +13,8 @@
         <tr>
           <th>Artist</th>
           <th>Last Refreshed</th>
+          <th>Scanned With</th>
+          {% if scan_in_progress %}<th>Status</th>{% endif %}
         </tr>
       </thead>
       <tbody>
@@ -25,10 +27,20 @@
             </a>
           </td>
           <td class="muted">{{ a.last_checked_display }}</td>
+          <td class="muted">{% if a.scanned_with %}v{{ a.scanned_with }}{% else %}-{% endif %}</td>
+          {% if scan_in_progress %}
+          <td>
+            {% if a.is_due %}
+            <span style="color: var(--md-sys-color-warning); font-weight: 500;">pending</span>
+            {% else %}
+            <span class="muted">done</span>
+            {% endif %}
+          </td>
+          {% endif %}
         </tr>
         {% else %}
         <tr>
-          <td colspan="2" class="muted" style="text-align: center;">No artists tracked yet -- run a scan to populate this.</td>
+          <td colspan="{% if scan_in_progress %}4{% else %}3{% endif %}" class="muted" style="text-align: center;">No artists tracked yet -- run a scan to populate this.</td>
         </tr>
         {% endfor %}
       </tbody>

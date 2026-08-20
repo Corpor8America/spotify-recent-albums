@@ -46,6 +46,8 @@ MAX_REQUESTS_PER_MINUTE = 120
 DEFAULT_MIN_REQUEST_INTERVAL_SECONDS = float(os.environ.get("MIN_REQUEST_INTERVAL", "10"))
 DEFAULT_DAYS_LOOKBACK = int(os.environ.get("DAYS_LOOKBACK", "365"))
 
+VERSION_FILE = Path(__file__).resolve().parent / "VERSION"
+
 CONFIG_FILE = DATA_DIR / "app-config.json"
 
 
@@ -83,6 +85,13 @@ def save_config(config):
 def is_configured():
     cfg = load_config()
     return bool(cfg.get("spotify_client_id")) and bool(cfg.get("spotify_client_secret"))
+
+
+def get_version():
+    try:
+        return VERSION_FILE.read_text().strip()
+    except OSError:
+        return "unknown"
 
 
 _ID_SEGMENT = re.compile(r"/[A-Za-z0-9]{15,}(?=/|$)")
@@ -813,7 +822,7 @@ def run_scan(days=None, interval_days=None, min_request_interval=None, market="U
                             log(f"    Added {new_count} new album(s)")
                         else:
                             log("    No new albums added")
-                        state["artists"][artist["id"]] = {"name": artist["name"], "last_checked": now_iso}
+                        state["artists"][artist["id"]] = {"name": artist["name"], "last_checked": now_iso, "scanned_with": get_version()}
                         processed_ids.add(artist["id"])
                         state["in_progress"]["processed_ids"] = list(processed_ids)
                         save_state(state)

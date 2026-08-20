@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="card">
+  <h2>
+    <span class="material-symbols-outlined">bug_report</span>
+    Artist Album Inspector
+  </h2>
+  <p class="muted" style="margin-bottom: 1.25rem;">Enter an artist ID or Spotify URL to see exactly what the API returns for their albums.</p>
+  <form method="POST" style="display: flex; gap: 0.75rem; margin-bottom: 1.25rem;">
+    <input type="text" name="artist_input" value="{{ artist_input }}" placeholder="Artist ID or Spotify URL" style="flex: 1; padding: 0.6rem 1rem; border-radius: 8px; border: 1px solid var(--md-sys-color-outline-variant); background: var(--md-sys-color-surface-container-low); color: var(--md-sys-color-on-surface); font-family: inherit; font-size: 0.95rem;">
+    <button type="submit" class="btn btn-primary" style="white-space: nowrap;">Fetch Albums</button>
+  </form>
+
+  {% if error %}
+  <div style="background: var(--md-sys-color-error-container); color: var(--md-sys-color-on-error-container); padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1rem;">
+    {{ error }}
+  </div>
+  {% endif %}
+
+  {% if result %}
+  <div style="margin-bottom: 1rem; display: flex; gap: 1.5rem; flex-wrap: wrap;">
+    <div><span class="muted">Artist:</span> <strong>{{ result.artist_name }}</strong></div>
+    <div><span class="muted">ID:</span> <code style="font-size: 0.85rem;">{{ result.artist_id }}</code></div>
+    <div><span class="muted">Albums returned:</span> <strong>{{ result.album_count }}</strong></div>
+  </div>
+
+  <div class="table-container">
+    <table class="releases-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>type</th>
+          <th>release_date</th>
+          <th>Parsed</th>
+          <th>Tracks</th>
+          <th>Future?</th>
+          <th>In State?</th>
+          <th>Artists</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in result.albums %}
+        <tr style="{% if a.is_future %}background: var(--md-sys-color-success-container);{% endif %}">
+          <td>
+            {% if a.url %}<a href="{{ a.url }}" target="_blank" style="font-weight: 500;">{{ a.name }}</a>{% else %}{{ a.name }}{% endif %}
+          </td>
+          <td><code>{{ a.album_type }}</code></td>
+          <td><code>{{ a.release_date }}</code></td>
+          <td><code>{{ a.parsed_date }}</code></td>
+          <td>{{ a.total_tracks }}</td>
+          <td>{% if a.is_future %}YES{% else %}no{% endif %}</td>
+          <td>{% if a.in_state %}YES{% else %}no{% endif %}</td>
+          <td class="muted">{{ a.artists }}</td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="8" class="muted" style="text-align: center;">No albums returned by the API.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <details style="margin-top: 1rem;">
+    <summary style="cursor: pointer; color: var(--md-sys-color-primary);">View raw API data (JSON)</summary>
+    <pre style="background: var(--md-sys-color-surface-container-lowest); padding: 1rem; border-radius: 8px; overflow-x: auto; font-size: 0.8rem; max-height: 600px; overflow-y: auto; margin-top: 0.5rem;">{{ result.albums | tojson(indent=2) }}</pre>
+  </details>
+  {% endif %}
+</div>
+
+<p class="footer-text">
+  <a href="{{ url_for('dashboard') }}" style="display: inline-flex; align-items: center; gap: 0.35rem;">
+    <span class="material-symbols-outlined" style="font-size: 16px;">arrow_back</span> Back to dashboard
+  </a>
+</p>
+
+{% endblock %}

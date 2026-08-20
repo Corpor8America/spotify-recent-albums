@@ -27,7 +27,7 @@
     </p>
     <p class="muted" style="margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;">
       <span class="material-symbols-outlined" style="font-size: 16px;">monitoring</span>
-      <span>{{ artists_tracked }} artist(s) tracked &middot; {{ known_albums_count }} album(s) known</span>
+      <span><a href="{{ url_for('artists_list') }}">{{ artists_tracked }} artist(s) tracked</a> &middot; {{ known_albums_count }} album(s) known</span>
     </p>
     
     <div class="button-row">

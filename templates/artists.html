@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="card">
+  <h2>
+    <span class="material-symbols-outlined">people</span>
+    Followed Artists ({{ artists|length }})
+  </h2>
+  <p class="muted" style="margin-bottom: 1.25rem;">All artists currently being tracked. The last refresh date shows when each artist's discography was last scanned for new releases.</p>
+  <div class="table-container">
+    <table class="artists-table">
+      <thead>
+        <tr>
+          <th>Artist</th>
+          <th>Last Refreshed</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in artists %}
+        <tr>
+          <td>
+            <a href="https://open.spotify.com/artist/{{ a.id }}" target="_blank" style="font-weight: 500; display: inline-flex; align-items: center; gap: 0.35rem;">
+              {{ a.name }}
+              <span class="material-symbols-outlined" style="font-size: 14px;">open_in_new</span>
+            </a>
+          </td>
+          <td class="muted">{{ a.last_checked_display }}</td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="2" class="muted" style="text-align: center;">No artists tracked yet -- run a scan to populate this.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<p class="footer-text">
+  <a href="{{ url_for('dashboard') }}" style="display: inline-flex; align-items: center; gap: 0.35rem;">
+    <span class="material-symbols-outlined" style="font-size: 16px;">arrow_back</span> Back to dashboard
+  </a>
+</p>
+
+{% endblock %}

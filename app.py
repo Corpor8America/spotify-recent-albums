@@ -335,6 +335,51 @@ def set_override(album_id):
     return redirect(url_for("dashboard"))
 
 
+# --- Followed Artists --------------------------------------------------------
+
+def _format_last_checked(iso_str):
+    try:
+        dt = datetime.fromisoformat(iso_str)
+    except (TypeError, ValueError):
+        return iso_str or "-"
+    now = datetime.now(timezone.utc)
+    delta = now - dt
+    seconds = int(delta.total_seconds())
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        m = seconds // 60
+        return f"{m} minute{'s' if m != 1 else ''} ago"
+    if seconds < 86400:
+        h = seconds // 3600
+        return f"{h} hour{'s' if h != 1 else ''} ago"
+    days = seconds // 86400
+    if days < 30:
+        return f"{days} day{'s' if days != 1 else ''} ago"
+    return dt.strftime("%Y-%m-%d")
+
+
+@app.route("/artists")
+def artists_list():
+    if not core.is_configured():
+        return redirect(url_for("settings"))
+    state = core.load_state()
+    raw_artists = state.get("artists", {})
+    artists = sorted(
+        [
+            {
+                "id": aid,
+                "name": info.get("name", aid),
+                "last_checked": info.get("last_checked", ""),
+                "last_checked_display": _format_last_checked(info.get("last_checked", "")),
+            }
+            for aid, info in raw_artists.items()
+        ],
+        key=lambda a: a["name"].lower(),
+    )
+    return render_template("artists.html", artists=artists, version=version())
+
+
 # --- Status API --------------------------------------------------------------
 
 @app.route("/status")

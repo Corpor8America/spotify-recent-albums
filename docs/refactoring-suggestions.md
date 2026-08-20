@@ -6,36 +6,11 @@ grow.
 
 ---
 
-## 1. Eliminate CLI/Core Duplication
+## 1. ~~Eliminate CLI/Core Duplication~~ ✅ Done
 
-**Problem:** `scripts/spotify-recent-albums.py` (792 lines) and `spotify_core.py`
-(848 lines) share ~500 lines of near-identical code. Functions like
-`spotify_request()`, `get_artist_albums()`, `prune_playlist()`,
-`parse_release_date()`, `is_auto_excluded()`, `RateLimiter`, and
-`LongRateLimitBlock` are duplicated verbatim. This means every bug fix or
-feature change must be applied in two places.
-
-**Suggestion:** Make the CLI script import from `spotify_core` instead of
-re-declaring everything. `spotify_core` already has a clean public API that
-the web app uses. The CLI script would become a thin wrapper:
-
-```python
-# scripts/spotify-recent-albums.py (after refactor)
-import spotify_core as core
-
-def main():
-    # argparse, OAuth (local browser flow), markdown output
-    # All core logic calls go through core.*
-```
-
-Functions unique to the CLI (e.g. `do_auth_flow()` with localhost HTTP server,
-`format_markdown_table()`, `search_artist_albums()`) stay in the script. The
-shared functions (`spotify_request`, `get_artist_albums`, `prune_playlist`,
-etc.) come from `spotify_core`.
-
-**Impact:** Eliminates ~500 lines, removes an entire class of "fixed in one
-file but not the other" bugs, and means `test_spotify_recent_albums.py` can
-drop its 17 duplicated test cases.
+The CLI script (`scripts/spotify-recent-albums.py`) has been removed along
+with its tests and simulation harness. All duplicated code and the one-off
+`add_missing_albums.py` script are gone.
 
 ---
 
@@ -242,22 +217,10 @@ they need infrastructure.
 
 ---
 
-## 9. Clean Up the `scripts/` Directory
+## 9. ~~Clean Up the `scripts/` Directory~~ ✅ Done
 
-**Problem:** `scripts/add_missing_albums.py` uses a fragile `importlib` hack
-to load the CLI script, then runs code at module level with no
-`if __name__ == "__main__"` guard. The CLI script itself is being replaced
-by the web app.
-
-**Suggestion:**
-
-- After the CLI-to-core deduplication (suggestion 1), `add_missing_albums.py`
-  should import from `spotify_core` directly instead of dynamically importing
-  the CLI script.
-- Add `if __name__ == "__main__":` guards to all scripts.
-- Consider whether `add_missing_albums.py` still needs to exist, or if the
-  functionality it provides (adding tracks for specific album IDs) should be
-  a one-off option in the web UI.
+The entire `scripts/` directory has been removed. The CLI script, one-off
+utilities, and their tests are all deleted.
 
 ---
 
@@ -290,7 +253,7 @@ Or use Flask's `blueprints` to group related routes and templates together.
 
 | # | Change | Effort | Impact | Risk |
 |---|--------|--------|--------|------|
-| 1 | CLI/Core deduplication | Medium | High | Low |
+| 1 | ~~CLI/Core deduplication~~ | ~~Medium~~ | ~~High~~ | ~~Low~~ |
 | 2 | Break up `spotify_core.py` | High | High | Medium |
 | 3 | Remove module-level side effects | Low | Medium | Low |
 | 4 | Extract override logic from route | Low | Low | Low |
@@ -298,7 +261,7 @@ Or use Flask's `blueprints` to group related routes and templates together.
 | 6 | Add `__init__.py` / fix test imports | Low | Medium | Low |
 | 7 | Add `pyproject.toml` | Low | Medium | None |
 | 8 | Separate test tiers | Medium | Medium | Low |
-| 9 | Clean up `scripts/` | Low | Low | Low |
+| 9 | ~~Clean up `scripts/`~~ | ~~Low~~ | ~~Low~~ | ~~Low~~ |
 | 10 | Template organization | Low | Low | None |
 
 **Recommended starting point:** Suggestions 1, 3, 5, and 7 are quick wins

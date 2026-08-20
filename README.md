@@ -114,11 +114,8 @@ to have it persisted properly into the volume going forward.
 - `--batch-size` / per-run artist caps — the per-category rate-limit
   isolation (`endpoint_category`, `LongRateLimitBlock`) is preserved as-is,
   so this still isn't needed.
-- The one-off scripts (`backfill_exclusions_once.py`, `add_missing_albums.py`,
-  `reorder_playlist_once.py`) — these were meant to run once and be deleted;
-  if you need one of them again, `docker exec` into the container and run
-  it directly against `/data/spotify-state.json`, or port it into a new
-  dashboard route the same way `/albums/<id>/override` was added.
+- The original CLI script and one-off scripts (`spotify-recent-albums.py`,
+  `add_missing_albums.py`, etc.) — superseded entirely by the web dashboard.
 
 ## Configuration
 

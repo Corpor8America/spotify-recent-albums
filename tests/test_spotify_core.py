@@ -556,6 +556,136 @@ class RunScanBlockedCategoryTests(unittest.TestCase):
         self.assertIsNone(core.blocked_until({}, "GET /artists/{id}/albums"))
 
 
+class PrunePlaylistTests(unittest.TestCase):
+    def test_removes_aged_out_album_tracks(self):
+        state = {
+            "known_albums": {
+                "alb1": {
+                    "name": "Old Album", "release_date": "2020-01-01",
+                    "added_to_playlist": True, "track_uris": ["spotify:track:a", "spotify:track:b"],
+                }
+            },
+            "artists": {}, "in_progress": None,
+        }
+        calls = []
+        def fake_remove(token, playlist_id, uris, state):
+            calls.append(uris)
+        with patch.object(core, "remove_tracks_from_playlist", side_effect=fake_remove):
+            with patch.object(core, "save_state", return_value=None):
+                core.prune_playlist("token", state, 365, "playlist123")
+        self.assertEqual(calls, [["spotify:track:a", "spotify:track:b"]])
+        self.assertFalse(state["known_albums"]["alb1"]["added_to_playlist"])
+
+    def test_shared_track_is_not_removed(self):
+        state = {
+            "known_albums": {
+                "old": {
+                    "name": "Old", "release_date": "2020-01-01",
+                    "added_to_playlist": True, "track_uris": ["spotify:track:shared", "spotify:track:only_old"],
+                },
+                "current": {
+                    "name": "Current", "release_date": "2026-07-01",
+                    "added_to_playlist": True, "track_uris": ["spotify:track:shared"],
+                },
+            },
+            "artists": {}, "in_progress": None,
+        }
+        calls = []
+        def fake_remove(token, playlist_id, uris, state):
+            calls.append(uris)
+        with patch.object(core, "remove_tracks_from_playlist", side_effect=fake_remove):
+            with patch.object(core, "save_state", return_value=None):
+                core.prune_playlist("token", state, 365, "playlist123")
+        self.assertEqual(calls, [["spotify:track:only_old"]])
+
+    def test_missing_track_uris_falls_back_to_fetch(self):
+        state = {
+            "known_albums": {
+                "alb1": {
+                    "name": "Old Album", "release_date": "2020-01-01",
+                    "added_to_playlist": True,
+                }
+            },
+            "artists": {}, "in_progress": None,
+        }
+        with patch.object(core, "get_album_track_uris", return_value=["spotify:track:fetched"]) as fetch_mock:
+            with patch.object(core, "remove_tracks_from_playlist", return_value=None) as remove_mock:
+                with patch.object(core, "save_state", return_value=None):
+                    core.prune_playlist("token", state, 365, "playlist123")
+        fetch_mock.assert_called_once()
+        remove_mock.assert_called_once_with("token", "playlist123", ["spotify:track:fetched"], state)
+
+    def test_no_playlist_id_is_noop(self):
+        state = {"known_albums": {"alb1": {"name": "X", "release_date": "2020-01-01", "added_to_playlist": True, "track_uris": ["u"]}}, "artists": {}, "in_progress": None}
+        with patch.object(core, "remove_tracks_from_playlist") as remove_mock:
+            core.prune_playlist("token", state, 365, None)
+        remove_mock.assert_not_called()
+
+    def test_not_yet_expired_album_is_untouched(self):
+        state = {"known_albums": {"alb1": {"name": "X", "release_date": "2026-07-01", "added_to_playlist": True, "track_uris": ["u"]}}, "artists": {}, "in_progress": None}
+        with patch.object(core, "remove_tracks_from_playlist") as remove_mock:
+            core.prune_playlist("token", state, 365, "playlist123")
+        remove_mock.assert_not_called()
+
+    def test_manually_excluded_album_is_pruned(self):
+        state = {
+            "known_albums": {
+                "alb1": {
+                    "name": "Live Album (Live)", "release_date": "2026-07-01",
+                    "added_to_playlist": True, "track_uris": ["spotify:track:x"],
+                    "manual_override": True,
+                }
+            },
+            "artists": {}, "in_progress": None,
+        }
+        calls = []
+        def fake_remove(token, playlist_id, uris, state):
+            calls.append(uris)
+        with patch.object(core, "remove_tracks_from_playlist", side_effect=fake_remove):
+            with patch.object(core, "save_state", return_value=None):
+                core.prune_playlist("token", state, 365, "playlist123")
+        self.assertEqual(calls, [["spotify:track:x"]])
+        self.assertFalse(state["known_albums"]["alb1"]["added_to_playlist"])
+
+    def test_manually_included_album_is_not_pruned(self):
+        state = {
+            "known_albums": {
+                "alb1": {
+                    "name": "Live Album (Live)", "release_date": "2026-07-01",
+                    "added_to_playlist": True, "track_uris": ["spotify:track:x"],
+                    "auto_excluded": True, "manual_override": False,
+                }
+            },
+            "artists": {}, "in_progress": None,
+        }
+        with patch.object(core, "remove_tracks_from_playlist") as remove_mock:
+            core.prune_playlist("token", state, 365, "playlist123")
+        remove_mock.assert_not_called()
+
+    def test_shared_track_excluded_and_current(self):
+        state = {
+            "known_albums": {
+                "excluded": {
+                    "name": "Live (Live)", "release_date": "2026-07-01",
+                    "added_to_playlist": True, "track_uris": ["spotify:track:shared", "spotify:track:only_excluded"],
+                    "manual_override": True,
+                },
+                "current": {
+                    "name": "Current", "release_date": "2026-07-01",
+                    "added_to_playlist": True, "track_uris": ["spotify:track:shared"],
+                },
+            },
+            "artists": {}, "in_progress": None,
+        }
+        calls = []
+        def fake_remove(token, playlist_id, uris, state):
+            calls.append(uris)
+        with patch.object(core, "remove_tracks_from_playlist", side_effect=fake_remove):
+            with patch.object(core, "save_state", return_value=None):
+                core.prune_playlist("token", state, 365, "playlist123")
+        self.assertEqual(calls, [["spotify:track:only_excluded"]])
+
+
 def tearDownModule():
     shutil.rmtree(TEST_DIR, ignore_errors=True)
 

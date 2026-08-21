@@ -52,17 +52,26 @@ def start_scan(ctx, days=None, interval_days=None, min_request_interval=None, ma
     if not run_lock.acquire(blocking=False):
         log("Scan already in progress -- skipping this trigger.")
         return False
-    threading.Thread(
-        target=run_scan,
-        kwargs={
-            "days": days,
-            "interval_days": interval_days,
-            "min_request_interval": min_request_interval,
-            "market": market,
-            "lock_held": True,
-        },
-        daemon=True,
-    ).start()
+
+    def _thread_main():
+        try:
+            run_scan(ctx, days=days, interval_days=interval_days,
+                     min_request_interval=min_request_interval, market=market,
+                     lock_held=True)
+        except Exception as exc:
+            # The thread must never die silently: clear any in-progress
+            # markers (idempotent -- run_scan's finally usually did it
+            # already) and surface the crash in the status log ring.
+            def _clear(state):
+                state.in_progress = None
+                return state
+            try:
+                update_state(ctx, _clear)
+            except Exception:
+                pass
+            log(f"Background scan crashed: {exc!r}")
+
+    threading.Thread(target=_thread_main, daemon=True).start()
     return True
 
 

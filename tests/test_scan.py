@@ -1,3 +1,4 @@
+import threading
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -78,6 +79,63 @@ class RecordAlbumTests(unittest.TestCase):
         self.assertFalse(entry.auto_excluded)
         self.assertIsNone(entry.manual_override)
         self.assertEqual(entry.first_seen, "2026-07-01T00:00:00+00:00")
+
+
+class StartScanThreadTests(ContextTestCase):
+    """Regression: the background thread must receive the context. The
+    Docker integration run caught run_scan() being spawned without it,
+    which crashed the thread instantly and left scan_running stuck true."""
+
+    def test_passes_context_and_options_to_background_scan(self):
+        done = threading.Event()
+        seen = {}
+
+        def fake_run_scan(ctx, **kwargs):
+            seen["ctx"] = ctx
+            seen.update(kwargs)
+            core.scan.run_lock.release()  # lock_held=True contract
+            done.set()
+
+        with patch.object(core.scan, "run_scan", side_effect=fake_run_scan):
+            self.assertTrue(core.start_scan(self.ctx))
+            self.assertTrue(done.wait(5), "background scan never ran")
+
+        self.assertIs(seen["ctx"], self.ctx)
+        self.assertTrue(seen["lock_held"])
+
+    def test_second_start_while_running_returns_false(self):
+        # run_lock is acquired synchronously by start_scan, so the second
+        # call must refuse even if the background thread has not started.
+        release = threading.Event()
+
+        def fake_run_scan(ctx, **kwargs):
+            release.wait(5)
+            core.scan.run_lock.release()
+
+        with patch.object(core.scan, "run_scan", side_effect=fake_run_scan):
+            self.assertTrue(core.start_scan(self.ctx))
+            self.assertFalse(core.start_scan(self.ctx))
+        release.set()
+        deadline = time.time() + 5
+        while time.time() < deadline and core.scan.run_lock.locked():
+            time.sleep(0.05)
+        self.assertFalse(core.scan.run_lock.locked())
+
+    def test_crashing_thread_clears_in_progress_marker(self):
+        core.save_state(State(in_progress=ScanProgress(due_ids=["a1"], processed_ids=[])))
+
+        def exploding_run_scan(ctx, **kwargs):
+            core.scan.run_lock.release()
+            raise RuntimeError("boom")
+
+        with patch.object(core.scan, "run_scan", side_effect=exploding_run_scan):
+            self.assertTrue(core.start_scan(self.ctx))
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                if core.load_state().in_progress is None:
+                    break
+                time.sleep(0.05)
+        self.assertIsNone(core.load_state().in_progress)
 
 
 class RunScanBlockedCategoryTests(ContextTestCase):

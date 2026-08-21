@@ -1,30 +1,24 @@
+"""Flask web app for the Spotify Recently Released Albums service.
+
+Importing this module has no side effects: the Flask app and the
+APScheduler background thread are only created by ``create_app()``
+(called from ``wsgi.py`` under gunicorn, or the ``__main__`` guard below).
+"""
+
 import os
 import re
 import secrets
-import threading
 from datetime import datetime, timezone
 
-from flask import Flask, redirect, request, url_for, render_template, jsonify, session
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import spotify_core as core
-
-
-def version():
-    try:
-        with open(os.path.join(os.path.dirname(__file__), "VERSION")) as f:
-            return f.read().strip()
-    except OSError:
-        return "unknown"
+from services import PlaylistService, ScanService
 
 
 def cfg():
     return core.load_config()
-
-
-app = Flask(__name__)
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
-app.secret_key = cfg()["flask_secret_key"]
 
 
 def public_base_url():
@@ -79,60 +73,6 @@ def _parse_float_field(form, key, default, min_value):
     return value
 
 
-# --- Settings / first-run setup ---------------------------------------------
-
-@app.route("/settings", methods=["GET", "POST"])
-def settings():
-    if request.method == "POST":
-        existing = cfg()
-        try:
-            c = {
-                "spotify_client_id": (request.form.get("spotify_client_id") or existing["spotify_client_id"]).strip(),
-                "spotify_client_secret": (request.form.get("spotify_client_secret") or existing["spotify_client_secret"]).strip(),
-                "spotify_playlist_id": request.form.get("spotify_playlist_id", "").strip(),
-                "interval_days": _parse_int_field(request.form, "interval_days", existing["interval_days"], min_value=1),
-                "min_request_interval": _parse_float_field(request.form, "min_request_interval", existing["min_request_interval"], min_value=0),
-                "days_lookback": _parse_int_field(request.form, "days_lookback", existing["days_lookback"], min_value=0),
-                "cron_schedule": request.form.get("cron_schedule", existing["cron_schedule"]).strip(),
-                "public_base_url": request.form.get("public_base_url", existing["public_base_url"]).rstrip("/"),
-            }
-            _validate_cron_schedule(c["cron_schedule"])
-            if c["spotify_playlist_id"] and not re.fullmatch(r"[A-Za-z0-9]{15,}", c["spotify_playlist_id"]):
-                raise ValueError("spotify_playlist_id must be alphanumeric (or empty)")
-        except ValueError as e:
-            return f"Invalid settings: {e}", 400
-        core.save_config(c)
-        core.log("Settings saved.")
-        return redirect(url_for("dashboard"))
-    return render_template("settings.html", config=cfg(), version=version(),
-                           effective_public_base_url=public_base_url(),
-                           connected=core.is_connected())
-
-
-@app.route("/create_playlist", methods=["POST"])
-def create_playlist():
-    c = cfg()
-    client_id, client_secret = _get_creds()
-    refresh_token = core.load_refresh_token()
-    if not all([client_id, client_secret, refresh_token]):
-        return "Not connected to Spotify", 400
-
-    name = (request.form.get("playlist_name") or "Recently Released Albums").strip()
-    token = core.get_access_token(client_id, client_secret, refresh_token)
-    try:
-        playlist_id = core.create_playlist(token, name)
-    except Exception as e:
-        core.log(f"Playlist creation failed: {e}")
-        return f"Playlist creation failed: {e}", 500
-
-    c["spotify_playlist_id"] = playlist_id
-    core.save_config(c)
-    core.log(f"Created playlist {name!r} ({playlist_id}); set as sync target.")
-    return redirect(url_for("settings"))
-
-
-# --- Dashboard ---------------------------------------------------------------
-
 def format_rate_limit_until(ts):
     now = datetime.now().astimezone()
     until = datetime.fromtimestamp(ts).astimezone()
@@ -145,197 +85,6 @@ def format_rate_limit_until(ts):
         relative = f"{remaining}s"
     return f"{until.strftime('%Y-%m-%d %I:%M:%S %p')} ({relative})"
 
-
-@app.route("/")
-def dashboard():
-    if not core.is_configured():
-        return redirect(url_for("settings"))
-
-    state = core.load_state()
-    if core.clear_expired_rate_limits(state):
-        core.save_state(state)
-    c = cfg()
-    report_albums = core.get_report_albums(state, c["days_lookback"])
-    excluded_albums = core.get_excluded_albums(state)
-    upcoming_albums = core.get_upcoming_albums(state)
-
-    return render_template(
-        "dashboard.html",
-        connected=core.is_connected(),
-        playlist_id=c["spotify_playlist_id"],
-        report_albums=report_albums,
-        excluded_albums=excluded_albums,
-        upcoming_albums=upcoming_albums,
-        in_progress=state.get("in_progress"),
-        rate_limits={
-            cat: format_rate_limit_until(ts)
-            for cat, ts in state.get("rate_limits", {}).items()
-        },
-        artists_tracked=len(state.get("artists", {})),
-        known_albums_count=len(state.get("known_albums", {})),
-        logs=core.get_recent_logs()[-80:],
-        scan_running=core.run_lock.locked(),
-        reorder_running=core.reorder_lock.locked(),
-        now=datetime.now(timezone.utc),
-        version=version(),
-    )
-
-
-# --- OAuth -------------------------------------------------------------------
-
-@app.route("/login")
-def login():
-    client_id, _ = _get_creds()
-    if not client_id:
-        return "Spotify Client ID not configured. Go to /settings first.", 500
-    csrf_state = secrets.token_urlsafe(16)
-    session["oauth_state"] = csrf_state
-    return redirect(core.get_auth_url(client_id, redirect_uri(), csrf_state))
-
-
-@app.route("/callback")
-def callback():
-    error = request.args.get("error")
-    if error:
-        return f"Spotify authorization failed: {error}", 400
-
-    if request.args.get("state") != session.get("oauth_state"):
-        return "State mismatch -- possible CSRF, please try /login again.", 400
-
-    code = request.args.get("code")
-    if not code:
-        return "Missing authorization code.", 400
-
-    client_id, client_secret = _get_creds()
-    token_data = core.exchange_code_for_token(client_id, client_secret, code, redirect_uri())
-    core.save_refresh_token(token_data["refresh_token"])
-    core.log("Connected to Spotify via OAuth.")
-    return redirect(url_for("dashboard"))
-
-
-# --- Scan actions ------------------------------------------------------------
-
-@app.route("/run", methods=["POST"])
-def run_now():
-    c = cfg()
-    core.start_scan(
-        days=c["days_lookback"],
-        interval_days=c["interval_days"],
-        min_request_interval=c["min_request_interval"],
-    )
-    return redirect(url_for("dashboard"))
-
-
-@app.route("/cancel", methods=["POST"])
-def cancel_scan():
-    core.cancel_scan()
-    return redirect(url_for("dashboard"))
-
-
-@app.route("/reorder", methods=["POST"])
-def reorder_playlist():
-    if not core.reorder_lock.acquire(blocking=False):
-        core.log("Reorder already in progress.")
-        return redirect(url_for("dashboard"))
-    threading.Thread(target=_do_reorder, kwargs={"lock_held": True}, daemon=True).start()
-    return redirect(url_for("dashboard"))
-
-
-def _do_reorder(lock_held=False):
-    if not lock_held and not core.reorder_lock.acquire(blocking=False):
-        core.log("Reorder already in progress.")
-        return
-    try:
-        # Reorder is destructive (delete-all then re-add), so it must not
-        # overlap a scan's playlist additions/pruning. Wait for any active
-        # scan to finish; run_lock also prevents a new scan from starting.
-        core.run_lock.acquire(blocking=True)
-        try:
-            c = cfg()
-            core.rate_limiter.min_interval_seconds = c["min_request_interval"]
-            client_id, client_secret = _get_creds()
-            refresh_token = core.load_refresh_token()
-            if not all([client_id, client_secret, refresh_token]):
-                core.log("Cannot reorder -- not connected.")
-                return
-            token = core.get_access_token(client_id, client_secret, refresh_token)
-            state = core.load_state()
-            playlist_id = c["spotify_playlist_id"]
-            core.reorder_playlist(token, state, playlist_id)
-        finally:
-            core.run_lock.release()
-    finally:
-        core.reorder_lock.release()
-
-
-# --- Album overrides ---------------------------------------------------------
-
-@app.route("/albums/<album_id>/override", methods=["POST"])
-def set_override(album_id):
-    value = request.form.get("value")
-
-    def _mutate(state):
-        album = state.get("known_albums", {}).get(album_id)
-        if not album:
-            return None
-        if value == "true":
-            album["manual_override"] = True
-        elif value == "false":
-            album["manual_override"] = False
-        else:
-            album["manual_override"] = None
-        return state
-
-    state = core.update_state(_mutate)
-    if album_id not in state.get("known_albums", {}):
-        return "Unknown album", 404
-
-    c = cfg()
-    playlist_id = c.get("spotify_playlist_id")
-    if not playlist_id:
-        return redirect(url_for("dashboard"))
-
-    client_id, client_secret = _get_creds()
-    refresh_token = core.load_refresh_token()
-    if not all([client_id, client_secret, refresh_token]):
-        return redirect(url_for("dashboard"))
-
-    album = state["known_albums"].get(album_id)
-    try:
-        token = core.get_access_token(client_id, client_secret, refresh_token)
-        if value == "true" and album.get("added_to_playlist"):
-            track_uris = album.get("track_uris")
-            if not track_uris:
-                track_uris = core.get_album_track_uris(token, album_id, state)
-            if track_uris:
-                core.remove_tracks_from_playlist(token, playlist_id, track_uris, state)
-                core.log(f"Removed {len(track_uris)} track(s) from '{album['name']}' (manually excluded)")
-                def _mark_removed(state):
-                    a = state.get("known_albums", {}).get(album_id)
-                    if a:
-                        a["added_to_playlist"] = False
-                        a["track_uris"] = []
-                    return state
-                core.update_state(_mark_removed)
-        elif value == "false":
-            track_uris = core.get_album_track_uris(token, album_id, state)
-            if track_uris:
-                core.add_tracks_to_playlist(token, playlist_id, track_uris, state)
-                core.log(f"Added {len(track_uris)} track(s) from '{album['name']}' (re-included)")
-                def _mark_added(state):
-                    a = state.get("known_albums", {}).get(album_id)
-                    if a:
-                        a["added_to_playlist"] = True
-                        a["track_uris"] = track_uris
-                    return state
-                core.update_state(_mark_added)
-    except Exception as e:
-        core.log(f"WARNING: Override saved but playlist update failed: {e}")
-
-    return redirect(url_for("dashboard"))
-
-
-# --- Followed Artists --------------------------------------------------------
 
 def _format_last_checked(iso_str):
     try:
@@ -359,116 +108,266 @@ def _format_last_checked(iso_str):
     return dt.strftime("%Y-%m-%d")
 
 
-@app.route("/artists")
-def artists_list():
-    if not core.is_configured():
-        return redirect(url_for("settings"))
-    state = core.load_state()
-    raw_artists = state.get("artists", {})
-    due_ids = set(state.get("in_progress", {}).get("due_ids", [])) if state.get("in_progress") else set()
-    artists = sorted(
-        [
-            {
-                "id": aid,
-                "name": info.get("name", aid),
-                "last_checked": info.get("last_checked", ""),
-                "last_checked_display": _format_last_checked(info.get("last_checked", "")),
-                "scanned_with": info.get("scanned_with", ""),
-                "is_due": aid in due_ids,
-                "is_processed": state.get("in_progress") is not None and aid not in due_ids,
-            }
-            for aid, info in raw_artists.items()
-        ],
-        key=lambda a: a["name"].lower(),
-    )
-    scan_running = core.run_lock.locked()
-    return render_template("artists.html", artists=artists, version=version(), scan_running=scan_running, scan_in_progress=state.get("in_progress") is not None)
+def create_app():
+    """Application factory: builds the Flask app and starts the scheduler."""
+    app = Flask(__name__)
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+    app.secret_key = cfg()["flask_secret_key"]
 
+    scans = ScanService()
+    playlists = PlaylistService()
 
-# --- Debug / Artist Inspector ------------------------------------------------
+    # --- Settings / first-run setup ------------------------------------------
 
-@app.route("/debug/artist", methods=["GET", "POST"])
-def debug_artist():
-    if not core.is_configured():
-        return redirect(url_for("settings"))
-
-    result = None
-    error = None
-    artist_input = ""
-
-    if request.method == "POST":
-        artist_input = (request.form.get("artist_input") or "").strip()
-
-        match = re.search(r"open\.spotify\.com/artist/([A-Za-z0-9]+)", artist_input)
-        if match:
-            artist_id = match.group(1)
-        elif re.fullmatch(r"[A-Za-z0-9]{22}", artist_input):
-            artist_id = artist_input
-        else:
-            error = "Enter a Spotify artist ID (22-char alphanumeric) or a full Spotify artist URL."
-            return render_template("debug_artist.html", artist_input=artist_input, result=result, error=error, version=version())
-
-        try:
-            client_id, client_secret = _get_creds()
-            refresh_token = core.load_refresh_token()
-            token = core.get_access_token(client_id, client_secret, refresh_token)
-            state = core.load_state()
-
-            artist_name = artist_id
+    @app.route("/settings", methods=["GET", "POST"])
+    def settings():
+        if request.method == "POST":
+            existing = cfg()
             try:
-                artist_data = core.spotify_get(token, f"{core.SPOTIFY_API_BASE}/artists/{artist_id}", state)
-                artist_name = artist_data.get("name", artist_id)
-            except Exception:
-                pass
+                c = {
+                    "spotify_client_id": (request.form.get("spotify_client_id") or existing["spotify_client_id"]).strip(),
+                    "spotify_client_secret": (request.form.get("spotify_client_secret") or existing["spotify_client_secret"]).strip(),
+                    "spotify_playlist_id": request.form.get("spotify_playlist_id", "").strip(),
+                    "interval_days": _parse_int_field(request.form, "interval_days", existing["interval_days"], min_value=1),
+                    "min_request_interval": _parse_float_field(request.form, "min_request_interval", existing["min_request_interval"], min_value=0),
+                    "days_lookback": _parse_int_field(request.form, "days_lookback", existing["days_lookback"], min_value=0),
+                    "cron_schedule": request.form.get("cron_schedule", existing["cron_schedule"]).strip(),
+                    "public_base_url": request.form.get("public_base_url", existing["public_base_url"]).rstrip("/"),
+                }
+                _validate_cron_schedule(c["cron_schedule"])
+                if c["spotify_playlist_id"] and not re.fullmatch(r"[A-Za-z0-9]{15,}", c["spotify_playlist_id"]):
+                    raise ValueError("spotify_playlist_id must be alphanumeric (or empty)")
+            except ValueError as e:
+                return f"Invalid settings: {e}", 400
+            core.save_config(c)
+            core.log("Settings saved.")
+            return redirect(url_for("dashboard"))
+        return render_template("settings.html", config=cfg(), version=core.get_version(),
+                               effective_public_base_url=public_base_url(),
+                               connected=core.is_connected())
 
-            albums = core.get_artist_albums(token, artist_id, state)
-            parsed = []
-            for a in albums:
-                rd = core.parse_release_date(a.get("release_date", ""))
-                now_date = datetime.now().date()
-                is_future = rd is not None and rd.date() > now_date
-                known = state.get("known_albums", {}).get(a["id"])
-                parsed.append({
-                    "id": a["id"],
-                    "name": a.get("name"),
-                    "album_type": a.get("album_type"),
-                    "release_date": a.get("release_date"),
-                    "parsed_date": rd.strftime("%Y-%m-%d") if rd else "N/A",
-                    "total_tracks": a.get("total_tracks"),
-                    "is_future": is_future,
-                    "in_state": known is not None,
-                    "url": a.get("external_urls", {}).get("spotify", ""),
-                    "artists": ", ".join(ar.get("name", "?") for ar in a.get("artists", [])),
-                    "raw": {k: a[k] for k in ("id", "name", "album_type", "release_date", "total_tracks") if k in a},
-                })
-            result = {
-                "artist_name": artist_name,
-                "artist_id": artist_id,
-                "album_count": len(parsed),
-                "albums": parsed,
-            }
-        except Exception as e:
-            error = f"API error: {e}"
+    @app.route("/create_playlist", methods=["POST"])
+    def create_playlist():
+        name = (request.form.get("playlist_name") or "Recently Released Albums").strip()
+        ok, error = playlists.create(name)
+        if not ok:
+            status = 400 if error == "Not connected to Spotify" else 500
+            return error, status
+        return redirect(url_for("settings"))
 
-    return render_template("debug_artist.html", artist_input=artist_input, result=result, error=error, version=version())
+    # --- Dashboard ---------------------------------------------------------------
 
+    @app.route("/")
+    def dashboard():
+        if not core.is_configured():
+            return redirect(url_for("settings"))
 
-# --- Status API --------------------------------------------------------------
+        state = core.load_state()
+        if core.clear_expired_rate_limits(state):
+            core.save_state(state)
+        c = cfg()
+        return render_template(
+            "dashboard.html",
+            connected=core.is_connected(),
+            playlist_id=c["spotify_playlist_id"],
+            report_albums=core.get_report_albums(state, c["days_lookback"]),
+            excluded_albums=core.get_excluded_albums(state),
+            upcoming_albums=core.get_upcoming_albums(state),
+            in_progress=state.in_progress,
+            rate_limits={
+                cat: format_rate_limit_until(ts)
+                for cat, ts in state.rate_limits.items()
+            },
+            artists_tracked=len(state.artists),
+            known_albums_count=len(state.known_albums),
+            logs=core.get_recent_logs()[-80:],
+            scan_running=core.run_lock.locked(),
+            reorder_running=core.reorder_lock.locked(),
+            now=datetime.now(timezone.utc),
+            version=core.get_version(),
+        )
 
-@app.route("/status")
-def status():
-    state = core.load_state()
-    if core.clear_expired_rate_limits(state):
-        core.save_state(state)
-    return jsonify({
-        "connected": core.is_connected(),
-        "scan_running": core.run_lock.locked(),
-        "reorder_running": core.reorder_lock.locked(),
-        "in_progress": state.get("in_progress"),
-        "rate_limits": state.get("rate_limits", {}),
-        "known_albums_count": len(state.get("known_albums", {})),
-        "logs": core.get_recent_logs()[-40:],
-    })
+    # --- OAuth -------------------------------------------------------------------
+
+    @app.route("/login")
+    def login():
+        client_id, _ = _get_creds()
+        if not client_id:
+            return "Spotify Client ID not configured. Go to /settings first.", 500
+        csrf_state = secrets.token_urlsafe(16)
+        session["oauth_state"] = csrf_state
+        return redirect(core.get_auth_url(client_id, redirect_uri(), csrf_state))
+
+    @app.route("/callback")
+    def callback():
+        error = request.args.get("error")
+        if error:
+            return f"Spotify authorization failed: {error}", 400
+
+        if request.args.get("state") != session.get("oauth_state"):
+            return "State mismatch -- possible CSRF, please try /login again.", 400
+
+        code = request.args.get("code")
+        if not code:
+            return "Missing authorization code.", 400
+
+        client_id, client_secret = _get_creds()
+        token_data = core.exchange_code_for_token(client_id, client_secret, code, redirect_uri())
+        core.save_refresh_token(token_data["refresh_token"])
+        core.log("Connected to Spotify via OAuth.")
+        return redirect(url_for("dashboard"))
+
+    # --- Scan actions ------------------------------------------------------------
+
+    @app.route("/run", methods=["POST"])
+    def run_now():
+        scans.trigger_now(cfg())
+        return redirect(url_for("dashboard"))
+
+    @app.route("/cancel", methods=["POST"])
+    def cancel_scan():
+        scans.cancel()
+        return redirect(url_for("dashboard"))
+
+    @app.route("/reorder", methods=["POST"])
+    def reorder_playlist():
+        playlists.reorder_async()
+        return redirect(url_for("dashboard"))
+
+    # --- Album overrides ---------------------------------------------------------
+
+    @app.route("/albums/<album_id>/override", methods=["POST"])
+    def set_override(album_id):
+        value = request.form.get("value")
+        known = playlists.apply_override(album_id, value)
+        if not known:
+            return "Unknown album", 404
+        return redirect(url_for("dashboard"))
+
+    # --- Followed Artists --------------------------------------------------------
+
+    @app.route("/artists")
+    def artists_list():
+        if not core.is_configured():
+            return redirect(url_for("settings"))
+        state = core.load_state()
+        due_ids = set(state.in_progress.due_ids) if state.in_progress else set()
+        artists = sorted(
+            [
+                {
+                    "id": aid,
+                    "name": info.name or aid,
+                    "last_checked": info.last_checked,
+                    "last_checked_display": _format_last_checked(info.last_checked),
+                    "scanned_with": info.scanned_with,
+                    "is_due": aid in due_ids,
+                    "is_processed": state.in_progress is not None and aid not in due_ids,
+                }
+                for aid, info in state.artists.items()
+            ],
+            key=lambda a: a["name"].lower(),
+        )
+        return render_template("artists.html", artists=artists, version=core.get_version(),
+                               scan_running=core.run_lock.locked(),
+                               scan_in_progress=state.in_progress is not None)
+
+    # --- Debug / Artist Inspector ------------------------------------------------
+
+    @app.route("/debug/artist", methods=["GET", "POST"])
+    def debug_artist():
+        if not core.is_configured():
+            return redirect(url_for("settings"))
+
+        result = None
+        error = None
+        artist_input = ""
+
+        if request.method == "POST":
+            artist_input = (request.form.get("artist_input") or "").strip()
+
+            match = re.search(r"open\.spotify\.com/artist/([A-Za-z0-9]+)", artist_input)
+            if match:
+                artist_id = match.group(1)
+            elif re.fullmatch(r"[A-Za-z0-9]{22}", artist_input):
+                artist_id = artist_input
+            else:
+                error = "Enter a Spotify artist ID (22-char alphanumeric) or a full Spotify artist URL."
+                return render_template("debug_artist.html", artist_input=artist_input, result=result, error=error, version=core.get_version())
+
+            try:
+                client_id, client_secret = _get_creds()
+                refresh_token = core.load_refresh_token()
+                token = core.get_access_token(client_id, client_secret, refresh_token)
+                state = core.load_state()
+
+                artist_name = artist_id
+                try:
+                    artist_data = core.spotify_get(token, f"{core.get_context().spotify_api_base}/artists/{artist_id}", state)
+                    artist_name = artist_data.get("name", artist_id)
+                except Exception:
+                    pass
+
+                albums = core.get_artist_albums(token, artist_id, state)
+                parsed = []
+                for a in albums:
+                    rd = core.parse_release_date(a.get("release_date", ""))
+                    now_date = datetime.now().date()
+                    is_future = rd is not None and rd.date() > now_date
+                    known = state.known_albums.get(a["id"])
+                    parsed.append({
+                        "id": a["id"],
+                        "name": a.get("name"),
+                        "album_type": a.get("album_type"),
+                        "release_date": a.get("release_date"),
+                        "parsed_date": rd.strftime("%Y-%m-%d") if rd else "N/A",
+                        "total_tracks": a.get("total_tracks"),
+                        "is_future": is_future,
+                        "in_state": known is not None,
+                        "url": a.get("external_urls", {}).get("spotify", ""),
+                        "artists": ", ".join(ar.get("name", "?") for ar in a.get("artists", [])),
+                        "raw": {k: a[k] for k in ("id", "name", "album_type", "release_date", "total_tracks") if k in a},
+                    })
+                result = {
+                    "artist_name": artist_name,
+                    "artist_id": artist_id,
+                    "album_count": len(parsed),
+                    "albums": parsed,
+                }
+            except Exception as e:
+                error = f"API error: {e}"
+
+        return render_template("debug_artist.html", artist_input=artist_input, result=result, error=error, version=core.get_version())
+
+    # --- Status / health API -----------------------------------------------------
+
+    @app.route("/status")
+    def status():
+        state = core.load_state()
+        if core.clear_expired_rate_limits(state):
+            core.save_state(state)
+        return jsonify({
+            "connected": core.is_connected(),
+            "scan_running": core.run_lock.locked(),
+            "reorder_running": core.reorder_lock.locked(),
+            "in_progress": state.in_progress.to_dict() if state.in_progress else None,
+            "rate_limits": dict(state.rate_limits),
+            "known_albums_count": len(state.known_albums),
+            "logs": core.get_recent_logs()[-40:],
+        })
+
+    @app.route("/healthz")
+    def healthz():
+        """Lightweight liveness probe."""
+        return jsonify({"ok": True}), 200
+
+    @app.route("/readyz")
+    def readyz():
+        """Readiness probe: ready once Spotify credentials are configured."""
+        ready = bool(cfg().get("spotify_client_id"))
+        return jsonify({"ready": ready}), (200 if ready else 503)
+
+    _start_scheduler()
+    return app
 
 
 # --- Scheduler ---------------------------------------------------------------
@@ -500,7 +399,6 @@ def _start_scheduler():
     core.log(f"Scheduler started (cron: {cron_expr} UTC)")
 
 
-_start_scheduler()
-
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")), debug=False)
+    application = create_app()
+    application.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")), debug=False)

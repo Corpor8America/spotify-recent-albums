@@ -14,7 +14,7 @@ with its tests and simulation harness. All duplicated code and the one-off
 
 ---
 
-## 2. Break Up `spotify_core.py`
+## 2. ~~Break Up `spotify_core.py`~~ Done
 
 **Problem:** At 848 lines, `spotify_core.py` handles too many concerns:
 configuration, token management, state persistence, rate limiting, Spotify
@@ -52,7 +52,7 @@ then continue.
 
 ---
 
-## 3. Remove Module-Level Side Effects
+## 3. ~~Remove Module-Level Side Effects~~ Done
 
 **Problem:** Importing `spotify_core` has side effects:
 - `DATA_DIR.mkdir(parents=True, exist_ok=True)` runs at import time (line 34),
@@ -94,7 +94,7 @@ instances for testing.
 
 ---
 
-## 4. Extract Override Playlist Logic from Route Handler
+## 4. ~~Extract Override Playlist Logic from Route Handler~~ Done
 
 **Problem:** The `set_override` route in `app.py` (lines 273-335) is 63 lines
 with nested inner functions, multiple `core.update_state()` calls, and
@@ -124,7 +124,7 @@ def set_override(album_id):
 
 ---
 
-## 5. Consolidate Version Handling
+## 5. ~~Consolidate Version Handling~~ Done
 
 **Problem:** `version()` in `app.py` and `get_version()` in `spotify_core.py`
 both read the VERSION file independently. `app.py` doesn't use `core.get_version()`.
@@ -135,7 +135,7 @@ in `config.py`.
 
 ---
 
-## 6. Add `__init__.py` to `tests/`
+## 6. ~~Add `__init__.py` to `tests/`~~ Done
 
 **Problem:** Test files manipulate `sys.path` to import source modules:
 
@@ -160,7 +160,7 @@ Then tests can do `import spotify_core` and `import app` directly without
 
 ---
 
-## 7. Adopt a `pyproject.toml`
+## 7. ~~Adopt a `pyproject.toml`~~ Done
 
 **Problem:** The project uses `requirements.txt` with no tooling configuration.
 There's no declared Python version, no linter config, no formatter config.
@@ -187,7 +187,7 @@ in one place.
 
 ---
 
-## 8. Separate Test Tiers
+## 8. ~~Separate Test Tiers~~ Done
 
 **Problem:** `test_spotify_core.py` mixes pure unit tests with integration-ish
 tests that spin up a `MockSpotifyServer`. This makes the test suite slow and
@@ -224,7 +224,7 @@ utilities, and their tests are all deleted.
 
 ---
 
-## 10. Template Organization
+## 10. ~~Template Organization~~ Done
 
 **Problem:** All templates live in a flat `templates/` directory. As pages grow
 (flask-admin, API docs, debug tools), this becomes harder to navigate.
@@ -249,7 +249,7 @@ Or use Flask's `blueprints` to group related routes and templates together.
 
 ---
 
-## 11. Dependency Injection Over Module Globals
+## 11. ~~Dependency Injection Over Module Globals~~ Done
 
 **Problem:** Everything reads from module globals (`SPOTIFY_API_BASE`,
 `rate_limiter`, `DATA_DIR`, `STATE_FILE`, `TOKEN_FILE`, `CONFIG_FILE`). The
@@ -315,7 +315,7 @@ monkey-patching needed.
 
 ---
 
-## 12. Typed Data Models
+## 12. ~~Typed Data Models~~ Done
 
 **Problem:** State is a raw `dict` everywhere. Album entries are dicts with
 12+ keys (`name`, `artist`, `artist_id`, `type`, `release_date`, `url`,
@@ -368,7 +368,7 @@ with typed objects. A typo like `album["addded_to_playlist"]` becomes a
 
 ---
 
-## 13. Storage Abstraction
+## 13. ~~Storage Abstraction~~ Done
 
 **Problem:** State persistence is two ad-hoc JSON files with manual
 `threading.RLock` / `tempfile.mkstemp` / `os.replace` dance. This is correct
@@ -392,7 +392,7 @@ without changing any business logic. The store is injected via `AppContext`.
 
 ---
 
-## 14. Error Taxonomy
+## 14. ~~Error Taxonomy~~ Done
 
 **Problem:** The codebase uses a mix of `LongRateLimitBlock` (custom),
 `RuntimeError` (built-in), and generic `Exception`. Error handling in
@@ -422,7 +422,7 @@ error types to HTTP status codes cleanly.
 
 ---
 
-## 15. Break Up `run_scan` God Function
+## 15. ~~Break Up `run_scan` God Function~~ Done
 
 **Problem:** `run_scan()` (lines 700-848, ~150 lines) handles token refresh,
 artist fetching, due-artist selection, album filtering, album recording,
@@ -449,7 +449,7 @@ functions.
 
 ---
 
-## 16. Service Layer Between Routes and Core
+## 16. ~~Service Layer Between Routes and Core~~ Done
 
 **Problem:** `app.py` route handlers directly call `core.*` functions and
 handle token refresh, error mapping, and redirect logic inline. The
@@ -491,7 +491,7 @@ def set_override(album_id):
 
 ---
 
-## 17. Structured Logging
+## 17. ~~Structured Logging~~ Done
 
 **Problem:** The ring buffer (`_log_lines`) is a flat list of strings with
 timestamps prepended by `log()`. There's no structured logging (JSON format),
@@ -517,7 +517,7 @@ Structured fields (artist_id, album_id, category) can be attached as
 
 ---
 
-## 18. Health Check Endpoint
+## 18. ~~Health Check Endpoint~~ Done
 
 **Problem:** The only health signal is `GET /status` which does a full state
 file read. There's no lightweight liveness probe for Docker/Kubernetes.
@@ -547,23 +547,23 @@ def readyz():
 | # | Change | Effort | Impact | Risk |
 |---|--------|--------|--------|------|
 | 1 | ~~CLI/Core deduplication~~ | ~~Medium~~ | ~~High~~ | ~~Low~~ |
-| 2 | Break up `spotify_core.py` | High | High | Medium |
-| 3 | Remove module-level side effects | Low | Medium | Low |
-| 4 | Extract override logic from route | Low | Low | Low |
-| 5 | Consolidate version handling | Trivial | Low | None |
-| 6 | Add `__init__.py` / fix test imports | Low | Medium | Low |
-| 7 | Add `pyproject.toml` | Low | Medium | None |
-| 8 | Separate test tiers | Medium | Medium | Low |
+| 2 | ~~Break up `spotify_core.py`~~ | ~~High~~ | ~~High~~ | ~~Medium~~ |
+| 3 | ~~Remove module-level side effects~~ | ~~Low~~ | ~~Medium~~ | ~~Low~~ |
+| 4 | ~~Extract override logic from route~~ | ~~Low~~ | ~~Low~~ | ~~Low~~ |
+| 5 | ~~Consolidate version handling~~ | ~~Trivial~~ | ~~Low~~ | ~~None~~ |
+| 6 | ~~Add `__init__.py` / fix test imports~~ | ~~Low~~ | ~~Medium~~ | ~~Low~~ |
+| 7 | ~~Add `pyproject.toml`~~ | ~~Low~~ | ~~Medium~~ | ~~None~~ |
+| 8 | ~~Separate test tiers~~ | ~~Medium~~ | ~~Medium~~ | ~~Low~~ |
 | 9 | ~~Clean up `scripts/`~~ | ~~Low~~ | ~~Low~~ | ~~Low~~ |
-| 10 | Template organization | Low | Low | None |
-| 11 | Dependency injection | Medium | High | Medium |
-| 12 | Typed data models | Medium | High | Low |
-| 13 | Storage abstraction | Medium | Medium | Low |
-| 14 | Error taxonomy | Low | Medium | Low |
-| 15 | Break up `run_scan` | Medium | High | Low |
-| 16 | Service layer | Medium | Medium | Low |
-| 17 | Structured logging | Low | Medium | Low |
-| 18 | Health check endpoints | Trivial | Low | None |
+| 10 | ~~Template organization~~ | ~~Low~~ | ~~Low~~ | ~~None~~ |
+| 11 | ~~Dependency injection~~ | ~~Medium~~ | ~~High~~ | ~~Medium~~ |
+| 12 | ~~Typed data models~~ | ~~Medium~~ | ~~High~~ | ~~Low~~ |
+| 13 | ~~Storage abstraction~~ | ~~Medium~~ | ~~Medium~~ | ~~Low~~ |
+| 14 | ~~Error taxonomy~~ | ~~Low~~ | ~~Medium~~ | ~~Low~~ |
+| 15 | ~~Break up `run_scan`~~ | ~~Medium~~ | ~~High~~ | ~~Low~~ |
+| 16 | ~~Service layer~~ | ~~Medium~~ | ~~Medium~~ | ~~Low~~ |
+| 17 | ~~Structured logging~~ | ~~Low~~ | ~~Medium~~ | ~~Low~~ |
+| 18 | ~~Health check endpoints~~ | ~~Trivial~~ | ~~Low~~ | ~~None~~ |
 
 **Recommended order:**
 

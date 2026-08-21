@@ -1,87 +1,34 @@
 import json
-import os
-import shutil
-import sys
-import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta
-from pathlib import Path
 from unittest.mock import patch
 
-try:
-    import flask
-except ImportError:
-    flask = None
-
-TEST_DIR = Path(tempfile.mkdtemp())
-
-os.environ["DATA_DIR"] = str(TEST_DIR)
-os.environ["RUN_SCHEDULER"] = "0"
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import spotify_core as core
-
-core.DATA_DIR = TEST_DIR
-core.CONFIG_FILE = TEST_DIR / "app-config.json"
-core.STATE_FILE = TEST_DIR / "spotify-state.json"
-core.TOKEN_FILE = TEST_DIR / "spotify-token.json"
-core.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-_config = {
-    "spotify_client_id": "test_client_id",
-    "spotify_client_secret": "test_client_secret",
-    "spotify_playlist_id": "",
-    "interval_days": 7,
-    "min_request_interval": 0,
-    "days_lookback": 365,
-    "cron_schedule": "0 6 * * *",
-    "public_base_url": "http://localhost:8080",
-    "flask_secret_key": "test-secret-key-for-testing",
-}
-with open(core.CONFIG_FILE, "w") as f:
-    json.dump(_config, f)
-
-if flask is not None:
-    from app import app
+from app import create_app
+from spotify_core.models import Album, State
+from tests.support import ContextTestCase
 
 
-@unittest.skipIf(flask is None, "flask not installed")
-class AppRoutesTests(unittest.TestCase):
+def full_album(album_id, name, release_date):
+    return Album(
+        id=album_id, name=name, artist="Test Artist", artist_id="art1", album_type="album",
+        release_date=release_date, url=f"https://open.spotify.com/album/{album_id}",
+        total_tracks=10, first_seen="2026-08-01T00:00:00+00:00",
+    )
+
+
+class AppRoutesTests(ContextTestCase):
     def setUp(self):
-        self.client = app.test_client()
-        self.client.testing = True
-        self._clean_data_files()
-        self._reset_config()
-
-    def tearDown(self):
-        self._clean_data_files()
-        self._reset_config()
-
-    def _clean_data_files(self):
-        for p in [core.STATE_FILE, core.TOKEN_FILE]:
-            if p.exists():
-                p.unlink()
-
-    def _reset_config(self):
-        with open(core.CONFIG_FILE, "w") as f:
-            json.dump(_config, f)
-
-    def _write_config(self, overrides):
-        cfg = dict(_config)
-        cfg.update(overrides)
-        with open(core.CONFIG_FILE, "w") as f:
-            json.dump(cfg, f)
-
-    def _write_token(self, token="test_refresh"):
-        with open(core.TOKEN_FILE, "w") as f:
-            json.dump({"refresh_token": token}, f)
+        super().setUp()
+        self.app = create_app()
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
 
     # --- dashboard -----------------------------------------------------------
 
     def test_dashboard_redirects_when_not_configured(self):
-        self._write_config({"spotify_client_id": "", "spotify_client_secret": ""})
+        self.write_config({"spotify_client_id": "", "spotify_client_secret": ""})
         response = self.client.get("/", follow_redirects=False)
         self.assertEqual(response.status_code, 302)
         self.assertIn("/settings", response.location)
@@ -96,45 +43,23 @@ class AppRoutesTests(unittest.TestCase):
         self.assertIn(b"Not connected", response.data)
 
     def test_dashboard_shows_connected_when_token_exists(self):
-        self._write_token()
+        self.write_token()
         response = self.client.get("/")
         self.assertIn(b"Connected", response.data)
 
     def test_dashboard_shows_upcoming_when_future_albums_exist(self):
         future_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
-        state = {
-            "artists": {},
-            "known_albums": {
-                "u1": {"name": "Forthcoming", "artist": "Test Artist",
-                       "artist_id": "art1", "type": "album",
-                       "release_date": future_date,
-                       "url": "https://open.spotify.com/album/u1",
-                       "total_tracks": 10, "first_seen": "2026-08-01T00:00:00+00:00",
-                       "auto_excluded": False, "manual_override": None,
-                       "added_to_playlist": False, "track_uris": []},
-            }
-        }
-        with open(core.STATE_FILE, "w") as f:
-            json.dump(state, f)
+        core.save_state(State(known_albums={
+            "u1": full_album("u1", "Forthcoming", future_date),
+        }))
         response = self.client.get("/")
         self.assertIn(b"Upcoming releases", response.data)
         self.assertIn(b"Forthcoming", response.data)
 
     def test_dashboard_hides_upcoming_when_no_future_albums(self):
-        state = {
-            "artists": {},
-            "known_albums": {
-                "a1": {"name": "Past Album", "artist": "Test Artist",
-                       "artist_id": "art1", "type": "album",
-                       "release_date": "2020-01-01",
-                       "url": "https://open.spotify.com/album/a1",
-                       "total_tracks": 10, "first_seen": "2026-08-01T00:00:00+00:00",
-                       "auto_excluded": False, "manual_override": None,
-                       "added_to_playlist": False, "track_uris": []},
-            }
-        }
-        with open(core.STATE_FILE, "w") as f:
-            json.dump(state, f)
+        core.save_state(State(known_albums={
+            "a1": full_album("a1", "Past Album", "2020-01-01"),
+        }))
         response = self.client.get("/")
         self.assertNotIn(b"Upcoming releases", response.data)
 
@@ -154,11 +79,11 @@ class AppRoutesTests(unittest.TestCase):
             "min_request_interval": "10",
             "days_lookback": "365",
             "cron_schedule": "0 6 * * *",
-    "public_base_url": "http://127.0.0.1:8081",
+            "public_base_url": "http://127.0.0.1:8081",
         }, follow_redirects=False)
         self.assertEqual(response.status_code, 302)
 
-    # --- create playlist ----------------------------------------------------
+    # --- create playlist -----------------------------------------------------
 
     def test_create_playlist_requires_connection(self):
         response = self.client.post("/create_playlist", data={"playlist_name": "X"})
@@ -167,7 +92,7 @@ class AppRoutesTests(unittest.TestCase):
     @patch("app.core.get_access_token", return_value="mock-token")
     @patch("app.core.create_playlist", return_value="new_playlist_id")
     def test_create_playlist_saves_id_and_redirects(self, mock_create, mock_token):
-        self._write_token()
+        self.write_token()
         response = self.client.post("/create_playlist", data={"playlist_name": "My Picks"},
                                     follow_redirects=False)
         self.assertEqual(response.status_code, 302)
@@ -176,7 +101,7 @@ class AppRoutesTests(unittest.TestCase):
         self.assertEqual(core.load_config()["spotify_playlist_id"], "new_playlist_id")
 
     def test_settings_shows_create_button_when_connected(self):
-        self._write_token()
+        self.write_token()
         response = self.client.get("/settings")
         self.assertIn(b"Create playlist", response.data)
 
@@ -192,7 +117,7 @@ class AppRoutesTests(unittest.TestCase):
         self.assertIn("accounts.spotify.com", response.location)
 
     def test_login_returns_500_when_no_client_id(self):
-        self._write_config({"spotify_client_id": "", "spotify_client_secret": ""})
+        self.write_config({"spotify_client_id": "", "spotify_client_secret": ""})
         response = self.client.get("/login")
         self.assertEqual(response.status_code, 500)
 
@@ -224,29 +149,25 @@ class AppRoutesTests(unittest.TestCase):
     # --- album overrides -----------------------------------------------------
 
     def _init_state_with_album(self):
-        state = {
-            "artists": {}, "known_albums": {}, "in_progress": None, "rate_limits": {},
-        }
-        state["known_albums"]["alb1"] = {
-            "name": "Test Album", "artist": "Test Artist",
-            "release_date": "2026-07-01", "auto_excluded": False,
-            "manual_override": None, "added_to_playlist": False,
-        }
-        core.save_state(state)
+        core.save_state(State(known_albums={
+            "alb1": Album(id="alb1", name="Test Album", artist="Test Artist",
+                          artist_id="art1", album_type="album", release_date="2026-07-01",
+                          url="", total_tracks=10, first_seen=""),
+        }))
 
     def test_set_override_true(self):
         self._init_state_with_album()
         response = self.client.post("/albums/alb1/override", data={"value": "true"}, follow_redirects=False)
         self.assertEqual(response.status_code, 302)
         loaded = core.load_state()
-        self.assertTrue(loaded["known_albums"]["alb1"]["manual_override"])
+        self.assertTrue(loaded.known_albums["alb1"].manual_override)
 
     def test_set_override_false(self):
         self._init_state_with_album()
         response = self.client.post("/albums/alb1/override", data={"value": "false"}, follow_redirects=False)
         self.assertEqual(response.status_code, 302)
         loaded = core.load_state()
-        self.assertFalse(loaded["known_albums"]["alb1"]["manual_override"])
+        self.assertFalse(loaded.known_albums["alb1"].manual_override)
 
     def test_set_override_unknown_album(self):
         response = self.client.post("/albums/nonexistent/override", data={"value": "true"})
@@ -268,64 +189,77 @@ class AppRoutesTests(unittest.TestCase):
         self.assertFalse(data["connected"])
 
     def test_status_connected_true_with_token(self):
-        self._write_token()
+        self.write_token()
         response = self.client.get("/status")
         data = json.loads(response.data)
         self.assertTrue(data["connected"])
 
+    def test_status_in_progress_shape(self):
+        from spotify_core.models import ScanProgress
+
+        core.save_state(State(in_progress=ScanProgress(due_ids=["a1"], processed_ids=["a2"])))
+        response = self.client.get("/status")
+        data = json.loads(response.data)
+        self.assertEqual(data["in_progress"], {"due_ids": ["a1"], "processed_ids": ["a2"]})
+
+    # --- health endpoints ----------------------------------------------------
+
+    def test_healthz_returns_ok(self):
+        response = self.client.get("/healthz")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(json.loads(response.data)["ok"])
+
+    def test_readyz_ready_when_configured(self):
+        response = self.client.get("/readyz")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(json.loads(response.data)["ready"])
+
+    def test_readyz_503_when_not_configured(self):
+        self.write_config({"spotify_client_id": "", "spotify_client_secret": ""})
+        response = self.client.get("/readyz")
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(json.loads(response.data)["ready"])
+
     # --- rate-limit banner ---------------------------------------------------
 
     def test_dashboard_shows_rate_limit_banner_from_persisted_state(self):
-        import time as _time
-        self._write_token()
-        core.save_state({
-            "artists": {},
-            "known_albums": {},
-            "in_progress": None,
-            "rate_limits": {"GET /artists/{id}/albums": int(_time.time()) + 3600},
-        })
+        self.write_token()
+        core.save_state(State(
+            rate_limits={"GET /artists/{id}/albums": int(time.time()) + 3600}))
         response = self.client.get("/")
         self.assertIn(b"Rate-limited", response.data)
         self.assertIn(b"GET /artists/{id}/albums", response.data)
 
     def test_dashboard_hides_rate_limit_banner_when_expired(self):
-        import time as _time
-        self._write_token()
-        core.save_state({
-            "artists": {},
-            "known_albums": {},
-            "in_progress": None,
-            "rate_limits": {"GET /artists/{id}/albums": int(_time.time()) - 3600},
-        })
+        self.write_token()
+        core.save_state(State(
+            rate_limits={"GET /artists/{id}/albums": int(time.time()) - 3600}))
         response = self.client.get("/")
         self.assertNotIn(b"Rate-limited", response.data)
 
     # --- artists page --------------------------------------------------------
 
     def test_artists_page_renders(self):
-        self._write_token()
+        self.write_token()
         response = self.client.get("/artists")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Followed Artists", response.data)
 
     def test_artists_page_empty_state(self):
-        self._write_token()
-        core.save_state({
-            "artists": {}, "known_albums": {}, "in_progress": None, "rate_limits": {},
-        })
+        self.write_token()
+        core.save_state(State())
         response = self.client.get("/artists")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"No artists tracked yet", response.data)
 
     def test_artists_page_shows_artists(self):
-        self._write_token()
-        core.save_state({
-            "artists": {
-                "a1": {"name": "Radiohead", "last_checked": "2026-08-01T00:00:00+00:00", "scanned_with": "1.5.0"},
-                "a2": {"name": "Bjork", "last_checked": "2026-07-15T00:00:00+00:00", "scanned_with": "1.5.0"},
-            },
-            "known_albums": {}, "in_progress": None, "rate_limits": {},
-        })
+        from spotify_core.models import Artist
+
+        self.write_token()
+        core.save_state(State(artists={
+            "a1": Artist(id="a1", name="Radiohead", last_checked="2026-08-01T00:00:00+00:00", scanned_with="1.5.0"),
+            "a2": Artist(id="a2", name="Bjork", last_checked="2026-07-15T00:00:00+00:00", scanned_with="1.5.0"),
+        }))
         response = self.client.get("/artists")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Radiohead", response.data)
@@ -333,23 +267,23 @@ class AppRoutesTests(unittest.TestCase):
         self.assertIn(b"Followed Artists (2)", response.data)
 
     def test_artists_page_scan_status(self):
-        self._write_token()
-        core.save_state({
-            "artists": {
-                "a1": {"name": "Radiohead", "last_checked": "2026-08-01T00:00:00+00:00", "scanned_with": "1.5.0"},
-                "a2": {"name": "Bjork", "last_checked": "2026-07-15T00:00:00+00:00", "scanned_with": "1.5.0"},
+        from spotify_core.models import Artist, ScanProgress
+
+        self.write_token()
+        core.save_state(State(
+            artists={
+                "a1": Artist(id="a1", name="Radiohead", last_checked="2026-08-01T00:00:00+00:00", scanned_with="1.5.0"),
+                "a2": Artist(id="a2", name="Bjork", last_checked="2026-07-15T00:00:00+00:00", scanned_with="1.5.0"),
             },
-            "known_albums": {},
-            "in_progress": {"due_ids": ["a2"], "processed_ids": ["a1"]},
-            "rate_limits": {},
-        })
+            in_progress=ScanProgress(due_ids=["a2"], processed_ids=["a1"]),
+        ))
         response = self.client.get("/artists")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"pending", response.data)
         self.assertIn(b"done", response.data)
 
     def test_artists_page_redirects_when_not_configured(self):
-        self._write_config({"spotify_client_id": "", "spotify_client_secret": ""})
+        self.write_config({"spotify_client_id": "", "spotify_client_secret": ""})
         response = self.client.get("/artists", follow_redirects=False)
         self.assertEqual(response.status_code, 302)
         self.assertIn("/settings", response.location)
@@ -411,98 +345,6 @@ class AppRoutesTests(unittest.TestCase):
         })
         self.assertEqual(response.status_code, 400)
         self.assertIn(b"Invalid settings", response.data)
-
-
-# --- debug_artist route tests (require MockSpotifyServer) ---
-
-
-try:
-    from mock_spotify_server import MockSpotifyServer
-    _has_mock = True
-except ImportError:
-    _has_mock = False
-
-
-@unittest.skipIf(not _has_mock, "mock_spotify_server not importable")
-class DebugArtistRouteTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.server = MockSpotifyServer(num_artists=3)
-        cls.server.start()
-        cls._orig_api_base = core.SPOTIFY_API_BASE
-        cls._orig_token_url = core.SPOTIFY_TOKEN_URL
-        core.SPOTIFY_API_BASE = cls.server.base_url + "/v1"
-        core.SPOTIFY_TOKEN_URL = cls.server.base_url + "/token"
-
-    @classmethod
-    def tearDownClass(cls):
-        core.SPOTIFY_API_BASE = cls._orig_api_base
-        core.SPOTIFY_TOKEN_URL = cls._orig_token_url
-        cls.server.stop()
-
-    def setUp(self):
-        self.client = app.test_client()
-        self.client.testing = True
-        self._clean_data_files()
-        self._reset_config()
-        self._write_token()
-
-    def tearDown(self):
-        self._clean_data_files()
-        self._reset_config()
-
-    def _clean_data_files(self):
-        for p in [core.STATE_FILE, core.TOKEN_FILE]:
-            if p.exists():
-                p.unlink()
-
-    def _reset_config(self):
-        with open(core.CONFIG_FILE, "w") as f:
-            json.dump(_config, f)
-
-    def _write_token(self, token="test_refresh"):
-        with open(core.TOKEN_FILE, "w") as f:
-            json.dump({"refresh_token": token}, f)
-
-    def _write_config(self, overrides):
-        cfg = dict(_config)
-        cfg.update(overrides)
-        with open(core.CONFIG_FILE, "w") as f:
-            json.dump(cfg, f)
-
-    def test_debug_artist_empty_form(self):
-        response = self.client.get("/debug/artist")
-        self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Artist Album Inspector", response.data)
-        self.assertIn(b"Fetch Albums", response.data)
-
-    def test_debug_artist_invalid_input(self):
-        response = self.client.post("/debug/artist", data={"artist_input": "not a valid id"})
-        self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Enter a Spotify artist ID", response.data)
-
-    def test_debug_artist_valid_id(self):
-        response = self.client.post("/debug/artist", data={"artist_input": "a000000000000000000001"})
-        self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Test Artist 1", response.data)
-        self.assertIn(b"Album 0 by Artist 1", response.data)
-
-    def test_debug_artist_valid_url(self):
-        response = self.client.post("/debug/artist", data={
-            "artist_input": "https://open.spotify.com/artist/a000000000000000000002"
-        })
-        self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Test Artist 2", response.data)
-
-    def test_debug_artist_not_configured_redirects(self):
-        self._write_config({"spotify_client_id": "", "spotify_client_secret": ""})
-        response = self.client.get("/debug/artist", follow_redirects=False)
-        self.assertEqual(response.status_code, 302)
-        self.assertIn("/settings", response.location)
-
-
-def tearDownModule():
-    shutil.rmtree(TEST_DIR, ignore_errors=True)
 
 
 if __name__ == "__main__":

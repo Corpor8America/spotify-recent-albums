@@ -19,4 +19,4 @@ EXPOSE 8080
 # and the run_lock that serializes scans only ever exist once. Do not
 # raise this without moving the scheduler + lock out of the app process
 # (e.g. a separate worker container) first.
-CMD ["gunicorn", "-w", "1", "-b", "0.0.0.0:8080", "--timeout", "180", "app:app"]
+CMD ["gunicorn", "-w", "1", "-b", "0.0.0.0:8080", "--timeout", "180", "wsgi:app"]

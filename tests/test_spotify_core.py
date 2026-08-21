@@ -686,6 +686,154 @@ class PrunePlaylistTests(unittest.TestCase):
         self.assertEqual(calls, [["spotify:track:only_excluded"]])
 
 
+class GetVersionTests(unittest.TestCase):
+    def test_returns_version_string(self):
+        version = core.get_version()
+        self.assertIsInstance(version, str)
+        self.assertNotEqual(version, "")
+
+    def test_returns_unknown_on_missing_file(self):
+        original = core.VERSION_FILE
+        core.VERSION_FILE = Path("/nonexistent/VERSION")
+        try:
+            self.assertEqual(core.get_version(), "unknown")
+        finally:
+            core.VERSION_FILE = original
+
+
+class GetAuthUrlTests(unittest.TestCase):
+    def test_url_contains_required_params(self):
+        url = core.get_auth_url("my-client-id", "http://localhost:8080/callback", "csrf123")
+        self.assertIn("client_id=my-client-id", url)
+        self.assertIn("redirect_uri=http", url)
+        self.assertIn("response_type=code", url)
+        self.assertIn("state=csrf123", url)
+        self.assertIn("scope=", url)
+        self.assertIn("user-follow-read", url)
+        self.assertIn("playlist-modify", url)
+
+    def test_url_starts_with_auth_endpoint(self):
+        url = core.get_auth_url("cid", "http://x/callback", "s")
+        self.assertTrue(url.startswith(core.SPOTIFY_AUTH_URL))
+
+
+class UpdateStateTests(unittest.TestCase):
+    def setUp(self):
+        if core.STATE_FILE.exists():
+            core.STATE_FILE.unlink()
+
+    def tearDown(self):
+        if core.STATE_FILE.exists():
+            core.STATE_FILE.unlink()
+
+    def test_mutator_applied_and_persisted(self):
+        def add_artist(state):
+            state["artists"]["a1"] = {"name": "Test"}
+            return state
+        result = core.update_state(add_artist)
+        self.assertEqual(result["artists"]["a1"]["name"], "Test")
+        loaded = core.load_state()
+        self.assertEqual(loaded["artists"]["a1"]["name"], "Test")
+
+    def test_returning_none_leaves_file_untouched(self):
+        core.save_state({"artists": {}, "known_albums": {}, "in_progress": None, "rate_limits": {}})
+
+        def noop(state):
+            return None
+        core.update_state(noop)
+        loaded = core.load_state()
+        self.assertEqual(loaded["artists"], {})
+
+
+class ReorderPlaylistMultiAlbumTests(unittest.TestCase):
+    def test_three_albums_sorted_oldest_first(self):
+        state = {
+            "known_albums": {
+                "new": {
+                    "release_date": "2026-07-01", "added_to_playlist": True,
+                    "auto_excluded": False, "track_uris": ["new-1", "new-2"],
+                },
+                "mid": {
+                    "release_date": "2026-03-15", "added_to_playlist": True,
+                    "auto_excluded": False, "track_uris": ["mid-1", "mid-2"],
+                },
+                "old": {
+                    "release_date": "2025-12-01", "added_to_playlist": True,
+                    "auto_excluded": False, "track_uris": ["old-1", "old-2"],
+                },
+            }
+        }
+
+        with patch.object(core, "get_playlist_track_uris", return_value=["new-1", "mid-1", "old-1"]), \
+             patch.object(core, "remove_tracks_from_playlist") as remove, \
+             patch.object(core, "add_tracks_to_playlist") as add:
+            core.reorder_playlist("token", state, "playlist")
+
+        add.assert_called_once_with(
+            "token", "playlist",
+            ["old-1", "old-2", "mid-1", "mid-2", "new-1", "new-2"], state,
+        )
+
+    def test_track_count_preserved_after_reorder(self):
+        state = {
+            "known_albums": {
+                "a": {
+                    "release_date": "2026-01-01", "added_to_playlist": True,
+                    "auto_excluded": False, "track_uris": ["a1", "a2", "a3"],
+                },
+                "b": {
+                    "release_date": "2026-06-01", "added_to_playlist": True,
+                    "auto_excluded": False, "track_uris": ["b1", "b2"],
+                },
+            }
+        }
+
+        with patch.object(core, "get_playlist_track_uris", return_value=["a1", "b1"]), \
+             patch.object(core, "remove_tracks_from_playlist"), \
+             patch.object(core, "add_tracks_to_playlist") as add:
+            core.reorder_playlist("token", state, "playlist")
+
+        added_uris = add.call_args[0][2]
+        self.assertEqual(len(added_uris), 5)
+
+
+class RunScanNotConnectedTests(unittest.TestCase):
+    def setUp(self):
+        for path in (core.STATE_FILE, core.CONFIG_FILE, core.TOKEN_FILE):
+            if path.exists():
+                path.unlink()
+        core.clear_logs()
+
+    def tearDown(self):
+        for path in (core.STATE_FILE, core.CONFIG_FILE, core.TOKEN_FILE):
+            if path.exists():
+                path.unlink()
+        core._cancel_event.clear()
+
+    def test_returns_not_connected_when_no_token(self):
+        core.save_config({
+            "spotify_client_id": "cid", "spotify_client_secret": "cs",
+            "spotify_playlist_id": "", "interval_days": 3,
+            "min_request_interval": 0, "days_lookback": 365,
+            "cron_schedule": "0 6 * * *", "public_base_url": "http://x",
+            "flask_secret_key": "test-key",
+        })
+        result = core.run_scan(days=365, interval_days=3, min_request_interval=0)
+        self.assertEqual(result["status"], "not_connected")
+
+    def test_returns_not_connected_when_no_creds(self):
+        core.save_config({
+            "spotify_client_id": "", "spotify_client_secret": "",
+            "spotify_playlist_id": "", "interval_days": 3,
+            "min_request_interval": 0, "days_lookback": 365,
+            "cron_schedule": "0 6 * * *", "public_base_url": "http://x",
+            "flask_secret_key": "test-key",
+        })
+        core.save_refresh_token("some-token")
+        result = core.run_scan(days=365, interval_days=3, min_request_interval=0)
+        self.assertEqual(result["status"], "not_connected")
+
+
 def tearDownModule():
     shutil.rmtree(TEST_DIR, ignore_errors=True)
 

@@ -204,7 +204,7 @@ class DockerIntegrationTests(unittest.TestCase):
         self._run_scan_and_wait()
         items = self._playlist_items()
         self.assertEqual(len(items), 20 * 10)  # 20 artists, 1 album x 10 tracks
-        self.assertIn("spotify:track:album_artist0001_000_00", items)
+        self.assertIn("spotify:track:album_a000000000000000000001_000_00", items)
 
     def test_second_scan_does_not_duplicate_tracks(self):
         """Re-running a scan when no artist is due must not re-add tracks."""
@@ -223,8 +223,8 @@ class DockerIntegrationTests(unittest.TestCase):
         self._reset_app_state()
         self._mock_reset()
         self._mock_configure(artist_release_dates={
-            "artist0001": "2026-07-01",
-            "artist0002": "2026-05-01",
+            "a000000000000000000001": "2026-07-01",
+            "a000000000000000000002": "2026-05-01",
         })
         self._run_scan_and_wait()
         before = self._playlist_items()
@@ -237,11 +237,11 @@ class DockerIntegrationTests(unittest.TestCase):
         after = self._playlist_items()
         self.assertEqual(len(after), len(before))
         self.assertEqual(set(after), set(before))
-        self.assertEqual(after[0], "spotify:track:album_artist0002_000_00")
-        self.assertTrue(all(u.startswith("spotify:track:album_artist0002_") for u in after[:10]))
+        self.assertEqual(after[0], "spotify:track:album_a000000000000000000002_000_00")
+        self.assertTrue(all(u.startswith("spotify:track:album_a000000000000000000002_") for u in after[:10]))
         self.assertLess(
-            after.index("spotify:track:album_artist0002_000_00"),
-            after.index("spotify:track:album_artist0001_000_00"),
+            after.index("spotify:track:album_a000000000000000000002_000_00"),
+            after.index("spotify:track:album_a000000000000000000001_000_00"),
         )
 
     def test_excluded_album_is_pruned_on_rescan(self):
@@ -251,7 +251,7 @@ class DockerIntegrationTests(unittest.TestCase):
         self._mock_reset()
         self._run_scan_and_wait()
         r = self.session.post(
-            f"{APP_URL}/albums/album_artist0001_000/override",
+            f"{APP_URL}/albums/album_a000000000000000000001_000/override",
             data={"value": "true"},
             allow_redirects=False,
             timeout=10,
@@ -260,8 +260,8 @@ class DockerIntegrationTests(unittest.TestCase):
         self._run_scan_and_wait()
 
         items = self._playlist_items()
-        self.assertNotIn("spotify:track:album_artist0001_000_00", items)
-        album = self._read_state()["known_albums"]["album_artist0001_000"]
+        self.assertNotIn("spotify:track:album_a000000000000000000001_000_00", items)
+        album = self._read_state()["known_albums"]["album_a000000000000000000001_000"]
         self.assertFalse(album["added_to_playlist"])
         self.assertIs(album["manual_override"], True)
 
@@ -272,13 +272,13 @@ class DockerIntegrationTests(unittest.TestCase):
         self._mock_reset()
         self._run_scan_and_wait()
         self.session.post(
-            f"{APP_URL}/albums/album_artist0001_000/override",
+            f"{APP_URL}/albums/album_a000000000000000000001_000/override",
             data={"value": "true"},
             allow_redirects=False,
             timeout=10,
         )
         self._run_scan_and_wait()
-        self.assertNotIn("spotify:track:album_artist0001_000_00", self._playlist_items())
+        self.assertNotIn("spotify:track:album_a000000000000000000001_000_00", self._playlist_items())
 
         # Simulate time passing: drop last_checked so every artist is due again.
         state = self._read_state()
@@ -286,25 +286,25 @@ class DockerIntegrationTests(unittest.TestCase):
         self._write_state(state)
 
         self.session.post(
-            f"{APP_URL}/albums/album_artist0001_000/override",
+            f"{APP_URL}/albums/album_a000000000000000000001_000/override",
             data={"value": "false"},
             allow_redirects=False,
             timeout=10,
         )
         self._run_scan_and_wait()
-        self.assertIn("spotify:track:album_artist0001_000_00", self._playlist_items())
+        self.assertIn("spotify:track:album_a000000000000000000001_000_00", self._playlist_items())
 
     def test_auto_excluded_album_not_playlisted(self):
         """Albums whose names end in parentheses are auto-excluded: recorded
         but never synced to the playlist."""
         self._reset_app_state()
         self._mock_reset()
-        self._mock_configure(paren_album_artists=["artist0003"])
+        self._mock_configure(paren_album_artists=["a000000000000000000003"])
         self._run_scan_and_wait()
 
         items = self._playlist_items()
-        self.assertFalse([u for u in items if u.startswith("spotify:track:album_artist0003_")])
-        album = self._read_state()["known_albums"]["album_artist0003_000"]
+        self.assertFalse([u for u in items if u.startswith("spotify:track:album_a000000000000000000003_")])
+        album = self._read_state()["known_albums"]["album_a000000000000000000003_000"]
         self.assertIs(album["auto_excluded"], True)
         self.assertIs(album["added_to_playlist"], False)
 
@@ -361,7 +361,7 @@ class DockerIntegrationTests(unittest.TestCase):
         self.session.post(f"{APP_URL}/run", timeout=10)
         self._wait_for_scan()
         r = self.session.post(
-            f"{APP_URL}/albums/album_artist0001_000/override",
+            f"{APP_URL}/albums/album_a000000000000000000001_000/override",
             data={"value": "true"},
             allow_redirects=False,
             timeout=10,

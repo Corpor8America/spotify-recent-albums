@@ -48,7 +48,7 @@ from urllib.parse import urlparse, parse_qs
 
 def _make_artist(i):
     return {
-        "id": f"artist{i:04d}",
+        "id": f"a{i:021d}",
         "name": f"Test Artist {i}",
     }
 
@@ -217,6 +217,9 @@ class _Handler(BaseHTTPRequestHandler):
         elif path.startswith("/v1/artists/") and path.endswith("/albums"):
             artist_id = path.split("/")[3]
             self._handle_artist_albums(artist_id, qs)
+        elif path.startswith("/v1/artists/") and path.count("/") == 3:
+            artist_id = path.split("/")[3]
+            self._handle_artist(artist_id)
         elif path.startswith("/v1/albums/") and path.endswith("/tracks"):
             album_id = path.split("/")[3]
             self._handle_album_tracks(album_id, qs)
@@ -347,6 +350,22 @@ class _Handler(BaseHTTPRequestHandler):
             "uri": "spotify:user:mock-user",
         })
 
+    def _handle_artist(self, artist_id):
+        s = self.state
+        for artist in s.artists:
+            if artist["id"] == artist_id:
+                self._send_json(200, {
+                    "id": artist_id,
+                    "name": artist["name"],
+                    "followers": {"total": 1000},
+                    "genres": [],
+                    "images": [],
+                    "popularity": 50,
+                    "uri": f"spotify:artist:{artist_id}",
+                })
+                return
+        self._send_json(404, {"error": {"status": 404, "message": "Artist not found"}})
+
     def _handle_following(self, qs):
         s = self.state
         limit = int(qs.get("limit", 50))
@@ -372,7 +391,7 @@ class _Handler(BaseHTTPRequestHandler):
         limit = int(qs.get("limit", 10))
         offset = int(qs.get("offset", 0))
         try:
-            artist_idx = int(artist_id.replace("artist", ""))
+            artist_idx = int(artist_id.lstrip("a"))
         except ValueError:
             artist_idx = 0
         release_date = s.artist_release_dates.get(artist_id, s.recent_release_date)

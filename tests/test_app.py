@@ -19,6 +19,7 @@ os.environ["DATA_DIR"] = str(TEST_DIR)
 os.environ["RUN_SCHEDULER"] = "0"
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import spotify_core as core
 
@@ -298,6 +299,206 @@ class AppRoutesTests(unittest.TestCase):
         })
         response = self.client.get("/")
         self.assertNotIn(b"Rate-limited", response.data)
+
+    # --- artists page --------------------------------------------------------
+
+    def test_artists_page_renders(self):
+        self._write_token()
+        response = self.client.get("/artists")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Followed Artists", response.data)
+
+    def test_artists_page_empty_state(self):
+        self._write_token()
+        core.save_state({
+            "artists": {}, "known_albums": {}, "in_progress": None, "rate_limits": {},
+        })
+        response = self.client.get("/artists")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"No artists tracked yet", response.data)
+
+    def test_artists_page_shows_artists(self):
+        self._write_token()
+        core.save_state({
+            "artists": {
+                "a1": {"name": "Radiohead", "last_checked": "2026-08-01T00:00:00+00:00", "scanned_with": "1.5.0"},
+                "a2": {"name": "Bjork", "last_checked": "2026-07-15T00:00:00+00:00", "scanned_with": "1.5.0"},
+            },
+            "known_albums": {}, "in_progress": None, "rate_limits": {},
+        })
+        response = self.client.get("/artists")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Radiohead", response.data)
+        self.assertIn(b"Bjork", response.data)
+        self.assertIn(b"Followed Artists (2)", response.data)
+
+    def test_artists_page_scan_status(self):
+        self._write_token()
+        core.save_state({
+            "artists": {
+                "a1": {"name": "Radiohead", "last_checked": "2026-08-01T00:00:00+00:00", "scanned_with": "1.5.0"},
+                "a2": {"name": "Bjork", "last_checked": "2026-07-15T00:00:00+00:00", "scanned_with": "1.5.0"},
+            },
+            "known_albums": {},
+            "in_progress": {"due_ids": ["a2"], "processed_ids": ["a1"]},
+            "rate_limits": {},
+        })
+        response = self.client.get("/artists")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"pending", response.data)
+        self.assertIn(b"done", response.data)
+
+    def test_artists_page_redirects_when_not_configured(self):
+        self._write_config({"spotify_client_id": "", "spotify_client_secret": ""})
+        response = self.client.get("/artists", follow_redirects=False)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/settings", response.location)
+
+    # --- settings validation -------------------------------------------------
+
+    def test_settings_rejects_bad_cron(self):
+        response = self.client.post("/settings", data={
+            "spotify_client_id": "id",
+            "spotify_client_secret": "secret",
+            "spotify_playlist_id": "",
+            "interval_days": "3",
+            "min_request_interval": "0",
+            "days_lookback": "365",
+            "cron_schedule": "invalid cron",
+            "public_base_url": "http://localhost:8080",
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Invalid settings", response.data)
+
+    def test_settings_rejects_bad_playlist_id(self):
+        response = self.client.post("/settings", data={
+            "spotify_client_id": "id",
+            "spotify_client_secret": "secret",
+            "spotify_playlist_id": "has spaces!@#",
+            "interval_days": "3",
+            "min_request_interval": "0",
+            "days_lookback": "365",
+            "cron_schedule": "0 6 * * *",
+            "public_base_url": "http://localhost:8080",
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Invalid settings", response.data)
+
+    def test_settings_rejects_negative_interval(self):
+        response = self.client.post("/settings", data={
+            "spotify_client_id": "id",
+            "spotify_client_secret": "secret",
+            "spotify_playlist_id": "",
+            "interval_days": "0",
+            "min_request_interval": "0",
+            "days_lookback": "365",
+            "cron_schedule": "0 6 * * *",
+            "public_base_url": "http://localhost:8080",
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Invalid settings", response.data)
+
+    def test_settings_rejects_too_few_cron_fields(self):
+        response = self.client.post("/settings", data={
+            "spotify_client_id": "id",
+            "spotify_client_secret": "secret",
+            "spotify_playlist_id": "",
+            "interval_days": "3",
+            "min_request_interval": "0",
+            "days_lookback": "365",
+            "cron_schedule": "0 6 * *",
+            "public_base_url": "http://localhost:8080",
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Invalid settings", response.data)
+
+
+# --- debug_artist route tests (require MockSpotifyServer) ---
+
+
+try:
+    from mock_spotify_server import MockSpotifyServer
+    _has_mock = True
+except ImportError:
+    _has_mock = False
+
+
+@unittest.skipIf(not _has_mock, "mock_spotify_server not importable")
+class DebugArtistRouteTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = MockSpotifyServer(num_artists=3)
+        cls.server.start()
+        cls._orig_api_base = core.SPOTIFY_API_BASE
+        cls._orig_token_url = core.SPOTIFY_TOKEN_URL
+        core.SPOTIFY_API_BASE = cls.server.base_url + "/v1"
+        core.SPOTIFY_TOKEN_URL = cls.server.base_url + "/token"
+
+    @classmethod
+    def tearDownClass(cls):
+        core.SPOTIFY_API_BASE = cls._orig_api_base
+        core.SPOTIFY_TOKEN_URL = cls._orig_token_url
+        cls.server.stop()
+
+    def setUp(self):
+        self.client = app.test_client()
+        self.client.testing = True
+        self._clean_data_files()
+        self._reset_config()
+        self._write_token()
+
+    def tearDown(self):
+        self._clean_data_files()
+        self._reset_config()
+
+    def _clean_data_files(self):
+        for p in [core.STATE_FILE, core.TOKEN_FILE]:
+            if p.exists():
+                p.unlink()
+
+    def _reset_config(self):
+        with open(core.CONFIG_FILE, "w") as f:
+            json.dump(_config, f)
+
+    def _write_token(self, token="test_refresh"):
+        with open(core.TOKEN_FILE, "w") as f:
+            json.dump({"refresh_token": token}, f)
+
+    def _write_config(self, overrides):
+        cfg = dict(_config)
+        cfg.update(overrides)
+        with open(core.CONFIG_FILE, "w") as f:
+            json.dump(cfg, f)
+
+    def test_debug_artist_empty_form(self):
+        response = self.client.get("/debug/artist")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Artist Album Inspector", response.data)
+        self.assertIn(b"Fetch Albums", response.data)
+
+    def test_debug_artist_invalid_input(self):
+        response = self.client.post("/debug/artist", data={"artist_input": "not a valid id"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Enter a Spotify artist ID", response.data)
+
+    def test_debug_artist_valid_id(self):
+        response = self.client.post("/debug/artist", data={"artist_input": "a000000000000000000001"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Test Artist 1", response.data)
+        self.assertIn(b"Album 0 by Artist 1", response.data)
+
+    def test_debug_artist_valid_url(self):
+        response = self.client.post("/debug/artist", data={
+            "artist_input": "https://open.spotify.com/artist/a000000000000000000002"
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Test Artist 2", response.data)
+
+    def test_debug_artist_not_configured_redirects(self):
+        self._write_config({"spotify_client_id": "", "spotify_client_secret": ""})
+        response = self.client.get("/debug/artist", follow_redirects=False)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/settings", response.location)
 
 
 def tearDownModule():

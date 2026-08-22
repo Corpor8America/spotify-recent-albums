@@ -99,15 +99,17 @@ class JsonFileStore:
     # --- OAuth refresh token -------------------------------------------------
 
     def save_refresh_token(self, token: str) -> None:
+        # Deliberately NOT chmod'ing this file to 0600: on Linux CI the app
+        # container runs as root while tests read the bind-mounted file back
+        # as an unprivileged runner user -- a root-owned 0600 token file
+        # breaks that contract (and diverges from pre-refactor behavior,
+        # where open(path, "w") left it umask-readable like every other
+        # persisted artifact). Harden at the volume level if needed.
         with self._lock:
             _write_json_atomic(self.token_file, {
                 "refresh_token": token,
                 "saved_at": datetime.now(timezone.utc).isoformat(),
             })
-        try:
-            os.chmod(self.token_file, 0o600)
-        except OSError:
-            pass
 
     def load_refresh_token(self) -> Optional[str]:
         with self._lock:

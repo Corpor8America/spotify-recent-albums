@@ -1,9 +1,23 @@
 import json
+import os
+import stat
 import unittest
 
 import spotify_core as core
 from spotify_core.models import Artist, ScanProgress, State
 from tests.support import ContextTestCase
+
+
+class TokenFilePermissionsTests(ContextTestCase):
+    """Regression: the token file must stay readable by non-root users.
+    CI reads the bind-mounted file back as an unprivileged runner while
+    the app container writes it as root -- a 0600 mode breaks that."""
+
+    @unittest.skipUnless(os.name == "posix", "file modes only meaningful on POSIX")
+    def test_saved_token_file_is_not_owner_only(self):
+        core.save_refresh_token("secret")
+        mode = stat.S_IMODE(os.stat(self.ctx.store.token_file).st_mode)
+        self.assertTrue(mode & 0o044, f"token file not readable by others: {oct(mode)}")
 
 
 class StateFileTests(ContextTestCase):

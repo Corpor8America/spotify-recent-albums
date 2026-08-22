@@ -2,102 +2,102 @@
   "artists": {
     "a000000000000000000000": {
       "name": "Test Artist 0",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000001": {
       "name": "Test Artist 1",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000002": {
       "name": "Test Artist 2",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000003": {
       "name": "Test Artist 3",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000004": {
       "name": "Test Artist 4",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000005": {
       "name": "Test Artist 5",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000006": {
       "name": "Test Artist 6",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000007": {
       "name": "Test Artist 7",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000008": {
       "name": "Test Artist 8",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000009": {
       "name": "Test Artist 9",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000010": {
       "name": "Test Artist 10",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000011": {
       "name": "Test Artist 11",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000012": {
       "name": "Test Artist 12",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000013": {
       "name": "Test Artist 13",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000014": {
       "name": "Test Artist 14",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000015": {
       "name": "Test Artist 15",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000016": {
       "name": "Test Artist 16",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000017": {
       "name": "Test Artist 17",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000018": {
       "name": "Test Artist 18",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     },
     "a000000000000000000019": {
       "name": "Test Artist 19",
-      "last_checked": "2026-08-21T22:25:59.050936+00:00",
+      "last_checked": "2026-08-21T23:59:07.553109+00:00",
       "scanned_with": "1.6.0"
     }
   },
@@ -110,7 +110,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000000_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -135,7 +135,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000001_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -160,7 +160,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000002_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -185,7 +185,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000003_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -210,7 +210,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000004_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -235,7 +235,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000005_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -260,7 +260,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000006_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -285,7 +285,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000007_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -310,7 +310,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000008_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -335,7 +335,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000009_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -360,7 +360,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000010_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -385,7 +385,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000011_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -410,7 +410,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000012_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -435,7 +435,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000013_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -460,7 +460,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000014_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -485,7 +485,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000015_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -510,7 +510,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000016_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -535,7 +535,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000017_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -560,7 +560,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000018_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,
@@ -585,7 +585,7 @@
       "release_date": "2026-07-01",
       "url": "https://open.spotify.com/album/album_a000000000000000000019_000",
       "total_tracks": 10,
-      "first_seen": "2026-08-21T22:25:59.050936+00:00",
+      "first_seen": "2026-08-21T23:59:07.553109+00:00",
       "auto_excluded": false,
       "manual_override": null,
       "added_to_playlist": true,

@@ -184,7 +184,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "relations": [
                     {
-                        "type": "artist",
+                        "type": "free streaming",
+                        "target-type": "artist",
                         "artist": {"id": mbid, "name": f"Artist {spotify_id}"},
                     }
                 ],

@@ -61,7 +61,7 @@ def resolve_spotify_to_mb(spotify_artist_id):
             return None
         relations = data.get("relations", [])
         for rel in relations:
-            if rel.get("type") == "artist" and "artist" in rel:
+            if rel.get("target-type") == "artist" and "artist" in rel:
                 mbid = rel["artist"].get("id")
                 if mbid:
                     return mbid

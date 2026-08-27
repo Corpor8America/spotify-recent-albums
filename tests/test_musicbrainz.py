@@ -92,7 +92,7 @@ class ResolveSpotifyToMbTests(unittest.TestCase):
     def test_extracts_mbid_from_relations(self, mock_get, mock_rl):
         mock_get.return_value = _mock_response(200, {
             "relations": [
-                {"type": "artist", "artist": {"id": "mb-123", "name": "Test"}},
+                {"type": "free streaming", "target-type": "artist", "artist": {"id": "mb-123", "name": "Test"}},
             ],
         })
         result = resolve_spotify_to_mb("spotify-123")
@@ -111,7 +111,7 @@ class ResolveSpotifyToMbTests(unittest.TestCase):
     @patch("spotify_core.musicbrainz.requests.get")
     def test_returns_none_when_relation_has_no_id(self, mock_get, mock_rl):
         mock_get.return_value = _mock_response(200, {
-            "relations": [{"type": "artist", "artist": {"name": "No ID"}}],
+            "relations": [{"type": "free streaming", "target-type": "artist", "artist": {"name": "No ID"}}],
         })
         result = resolve_spotify_to_mb("spotify-123")
         self.assertIsNone(result)

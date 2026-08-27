@@ -1,6 +1,6 @@
 [project]
 name = "spotify-recently-released-albums"
-version = "1.5.2"
+version = "1.7.1"
 requires-python = ">=3.12"
 
 [tool.pytest.ini_options]

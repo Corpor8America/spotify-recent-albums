@@ -11,6 +11,8 @@ from .logging import log
 _last_request_time = 0.0
 _MIN_INTERVAL = 1.0
 
+_MB_BASE_URL = "https://musicbrainz.org"
+
 _USER_AGENT = "SpotifyRecentlyReleasedAlbums/1.0 (https://github.com/anomalyco/Spotify-Recently-Released-Albums)"
 
 
@@ -47,7 +49,7 @@ def mb_request(url, params=None):
 
 def resolve_spotify_to_mb(spotify_artist_id):
     """Resolve a Spotify artist ID to a MusicBrainz artist MBID via URL lookup."""
-    url = "https://musicbrainz.org/ws/2/url"
+    url = f"{_MB_BASE_URL}/ws/2/url"
     params = {
         "resource": f"https://open.spotify.com/artist/{spotify_artist_id}",
         "inc": "artist-rels",
@@ -74,7 +76,7 @@ def get_artist_release_groups(ctx, mbid):
     offset = 0
     limit = 100
     while True:
-        url = f"https://musicbrainz.org/ws/2/artist/{mbid}"
+        url = f"{_MB_BASE_URL}/ws/2/artist/{mbid}"
         params = {
             "inc": "release-groups",
             "fmt": "json",
@@ -94,7 +96,7 @@ def get_artist_release_groups(ctx, mbid):
 
 def get_artist_active(mbid):
     """Check if an artist is still active. Returns True if active (life_span.ended is False)."""
-    url = f"https://musicbrainz.org/ws/2/artist/{mbid}"
+    url = f"{_MB_BASE_URL}/ws/2/artist/{mbid}"
     params = {"fmt": "json"}
     try:
         data = mb_request(url, params)

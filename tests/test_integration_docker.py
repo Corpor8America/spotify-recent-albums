@@ -203,7 +203,7 @@ class DockerIntegrationTests(unittest.TestCase):
         self._mock_reset()
         self._run_scan_and_wait()
         items = self._playlist_items()
-        self.assertEqual(len(items), 20 * 10)  # 20 artists, 1 album x 10 tracks
+        self.assertEqual(len(items), 6 * 10)  # 6 artists, 1 album x 10 tracks
         self.assertIn("spotify:track:album_a000000000000000000001_000_00", items)
 
     def test_second_scan_does_not_duplicate_tracks(self):

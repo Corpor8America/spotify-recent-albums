@@ -245,6 +245,7 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/_control/reset_playlist":
             with self.state.lock:
                 self.state.playlist_tracks = []
+                self.state.created_playlists = []
             self._send_json(200, {"ok": True})
             return
 

@@ -344,11 +344,42 @@ def create_app():
                         "artists": ", ".join(ar.get("name", "?") for ar in a.get("artists", [])),
                         "raw": {k: a[k] for k in ("id", "name", "album_type", "release_date", "total_tracks") if k in a},
                     })
+
+                mb_info = None
+                try:
+                    mbid = core.resolve_spotify_to_mb(artist_id)
+                    if mbid:
+                        ctx = core.get_context()
+                        mb_active = core.get_artist_active(mbid)
+                        mb_release_groups = core.get_artist_release_groups(ctx, mbid)
+                        mb_upcoming = core.get_albums_with_future_dates(ctx, mbid)
+                        mb_albums = []
+                        for rg in mb_release_groups:
+                            mb_albums.append({
+                                "id": rg.get("id"),
+                                "name": rg.get("title"),
+                                "primary_type": rg.get("primary-type"),
+                                "release_date": rg.get("first-release-date", ""),
+                                "is_upcoming": rg.get("id", "") in {u.get("id") for u in mb_upcoming},
+                                "url": f"https://musicbrainz.org/release-group/{rg.get('id')}",
+                            })
+                        mb_info = {
+                            "mbid": mbid,
+                            "active": mb_active,
+                            "album_count": len(mb_albums),
+                            "upcoming_count": len(mb_upcoming),
+                            "albums": mb_albums,
+                            "url": f"https://musicbrainz.org/artist/{mbid}",
+                        }
+                except Exception as mb_err:
+                    mb_info = {"error": str(mb_err)}
+
                 result = {
                     "artist_name": artist_name,
                     "artist_id": artist_id,
                     "album_count": len(parsed),
                     "albums": parsed,
+                    "musicbrainz": mb_info,
                 }
             except Exception as e:
                 error = f"API error: {e}"

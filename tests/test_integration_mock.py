@@ -103,6 +103,35 @@ class DebugArtistRouteTests(MockServerTestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("/settings", response.location)
 
+    @patch("app.core.resolve_spotify_to_mb")
+    @patch("app.core.get_artist_active")
+    @patch("app.core.get_artist_release_groups")
+    @patch("app.core.get_albums_with_future_dates")
+    def test_debug_artist_includes_musicbrainz(self, mock_future, mock_rg, mock_active, mock_resolve):
+        mock_resolve.return_value = "mb-artist-id-123"
+        mock_active.return_value = True
+        mock_rg.return_value = [
+            {"id": "rg-1", "title": "MB Album One", "primary-type": "Album", "first-release-date": "2025-06-01"},
+            {"id": "rg-2", "title": "MB Album Two", "primary-type": "Album", "first-release-date": "2025-12-15"},
+        ]
+        mock_future.return_value = [
+            {"id": "rg-2", "title": "MB Album Two", "primary-type": "Album", "first-release-date": "2025-12-15"},
+        ]
+
+        response = self.client.post("/debug/artist", data={"artist_input": "a000000000000000000001"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"MusicBrainz Lookup", response.data)
+        self.assertIn(b"mb-artist-id-123", response.data)
+        self.assertIn(b"MB Album One", response.data)
+        self.assertIn(b"MB Album Two", response.data)
+
+    @patch("app.core.resolve_spotify_to_mb", side_effect=Exception("MB lookup failed"))
+    def test_debug_artist_musicbrainz_error_handled(self, mock_resolve):
+        response = self.client.post("/debug/artist", data={"artist_input": "a000000000000000000001"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Test Artist 1", response.data)
+        self.assertIn(b"MB lookup failed", response.data)
+
 
 class RunScanAgainstMockServerTests(MockServerTestCase):
     """End-to-end scan against the mock server: discovers albums and syncs

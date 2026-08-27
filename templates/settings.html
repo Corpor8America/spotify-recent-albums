@@ -94,6 +94,33 @@
       </div>
     </div>
 
+    <!-- Group: MusicBrainz -->
+    <div class="settings-group">
+      <h3><span class="material-symbols-outlined" style="font-size: 18px; vertical-align: middle; margin-right: 0.25rem;">music_note</span> MusicBrainz</h3>
+      <p class="muted" style="margin-bottom: 1rem;">MusicBrainz provides upcoming album data and artist active status to optimize scans.</p>
+      <div class="settings-row">
+        <div class="form-field">
+          <label for="musicbrainz_active_refresh_days">Active status refresh interval</label>
+          <input type="number" id="musicbrainz_active_refresh_days" name="musicbrainz_active_refresh_days" value="{{ config.musicbrainz_active_refresh_days }}" min="1" max="365">
+          <span class="helper-text">Re-check active artists on MusicBrainz every N days</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Group: Logging -->
+    <div class="settings-group">
+      <h3><span class="material-symbols-outlined" style="font-size: 18px; vertical-align: middle; margin-right: 0.25rem;">terminal</span> Logging</h3>
+      <div class="settings-row" style="grid-template-columns: 1fr;">
+        <div class="form-field">
+          <label for="verbose_logging">
+            <input type="checkbox" id="verbose_logging" name="verbose_logging" value="true" {% if config.verbose_logging %}checked{% endif %}>
+            Verbose logging
+          </label>
+          <span class="helper-text">Show detailed scan information (MusicBrainz lookups, per-album details)</span>
+        </div>
+      </div>
+    </div>
+
     <div class="settings-group">
       <h3><span class="material-symbols-outlined" style="font-size: 18px; vertical-align: middle; margin-right: 0.25rem;">security</span> Session secret</h3>
       <div class="settings-row" style="grid-template-columns: 1fr;">

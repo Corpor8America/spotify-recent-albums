@@ -133,6 +133,8 @@ def create_app():
                     "days_lookback": _parse_int_field(request.form, "days_lookback", existing["days_lookback"], min_value=0),
                     "cron_schedule": request.form.get("cron_schedule", existing["cron_schedule"]).strip(),
                     "public_base_url": request.form.get("public_base_url", existing["public_base_url"]).rstrip("/"),
+                    "musicbrainz_active_refresh_days": _parse_int_field(request.form, "musicbrainz_active_refresh_days", existing.get("musicbrainz_active_refresh_days", 30), min_value=1),
+                    "verbose_logging": request.form.get("verbose_logging") == "true",
                 }
                 _validate_cron_schedule(c["cron_schedule"])
                 if c["spotify_playlist_id"] and not re.fullmatch(r"[A-Za-z0-9]{15,}", c["spotify_playlist_id"]):
@@ -172,7 +174,6 @@ def create_app():
             playlist_id=c["spotify_playlist_id"],
             report_albums=core.get_report_albums(state, c["days_lookback"]),
             excluded_albums=core.get_excluded_albums(state),
-            upcoming_albums=core.get_upcoming_albums(state),
             in_progress=state.in_progress,
             rate_limits={
                 cat: format_rate_limit_until(ts)
@@ -262,6 +263,8 @@ def create_app():
                     "scanned_with": info.scanned_with,
                     "is_due": aid in due_ids,
                     "is_processed": state.in_progress is not None and aid not in due_ids,
+                    "musicbrainz_id": info.musicbrainz_id,
+                    "mb_active": info.mb_active,
                 }
                 for aid, info in state.artists.items()
             ],
@@ -270,6 +273,20 @@ def create_app():
         return render_template("artists.html", artists=artists, version=core.get_version(),
                                scan_running=core.run_lock.locked(),
                                scan_in_progress=state.in_progress is not None)
+
+    @app.route("/artists/<artist_id>/toggle-active", methods=["POST"])
+    def toggle_active(artist_id):
+        if not core.is_configured():
+            return redirect(url_for("settings"))
+        state = core.load_state()
+        artist = state.artists.get(artist_id)
+        if not artist:
+            return "Unknown artist", 404
+        artist.mb_active = not artist.mb_active
+        artist.mb_active_checked = ""  # Force re-check on next scan
+        core.save_state(state)
+        core.log(f"Toggled active status for {artist.name}: {'active' if artist.mb_active else 'inactive'}")
+        return redirect(url_for("artists_list"))
 
     # --- Debug / Artist Inspector ------------------------------------------------
 
@@ -327,11 +344,42 @@ def create_app():
                         "artists": ", ".join(ar.get("name", "?") for ar in a.get("artists", [])),
                         "raw": {k: a[k] for k in ("id", "name", "album_type", "release_date", "total_tracks") if k in a},
                     })
+
+                mb_info = None
+                try:
+                    mbid = core.resolve_spotify_to_mb(artist_id)
+                    if mbid:
+                        ctx = core.get_context()
+                        mb_active = core.get_artist_active(mbid)
+                        mb_release_groups = core.get_artist_release_groups(ctx, mbid)
+                        mb_upcoming = core.get_albums_with_future_dates(ctx, mbid)
+                        mb_albums = []
+                        for rg in mb_release_groups:
+                            mb_albums.append({
+                                "id": rg.get("id"),
+                                "name": rg.get("title"),
+                                "primary_type": rg.get("primary-type"),
+                                "release_date": rg.get("first-release-date", ""),
+                                "is_upcoming": rg.get("id", "") in {u.get("id") for u in mb_upcoming},
+                                "url": f"https://musicbrainz.org/release-group/{rg.get('id')}",
+                            })
+                        mb_info = {
+                            "mbid": mbid,
+                            "active": mb_active,
+                            "album_count": len(mb_albums),
+                            "upcoming_count": len(mb_upcoming),
+                            "albums": mb_albums,
+                            "url": f"https://musicbrainz.org/artist/{mbid}",
+                        }
+                except Exception as mb_err:
+                    mb_info = {"error": str(mb_err)}
+
                 result = {
                     "artist_name": artist_name,
                     "artist_id": artist_id,
                     "album_count": len(parsed),
                     "albums": parsed,
+                    "musicbrainz": mb_info,
                 }
             except Exception as e:
                 error = f"API error: {e}"

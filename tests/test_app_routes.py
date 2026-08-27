@@ -53,7 +53,7 @@ class AppRoutesTests(ContextTestCase):
             "u1": full_album("u1", "Forthcoming", future_date),
         }))
         response = self.client.get("/")
-        self.assertIn(b"Upcoming releases", response.data)
+        self.assertIn(b"Recent releases", response.data)
         self.assertIn(b"Forthcoming", response.data)
 
     def test_dashboard_hides_upcoming_when_no_future_albums(self):

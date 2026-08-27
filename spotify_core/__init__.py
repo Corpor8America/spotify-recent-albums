@@ -13,7 +13,7 @@ functions directly or install it with ``set_context``.
 
 import threading
 
-from . import artists, auth, api, config, filters, playlists, reports, scan, state
+from . import artists, auth, api, config, filters, musicbrainz, playlists, reports, scan, state
 from .api import (
     ALBUM_TRACKS_CATEGORY,
     ARTIST_ALBUMS_CATEGORY,
@@ -55,7 +55,7 @@ from .errors import (
 )
 from .filters import is_auto_excluded, is_effectively_excluded, parse_release_date
 from .logging import clear_logs, configure_logging, get_recent_logs, log
-from .models import Album, Artist, ScanProgress, State
+from .models import Album, Artist, MusicBrainzAlbum, ScanProgress, State
 from .playlists import (
     add_tracks_to_playlist,
     apply_album_override,
@@ -136,6 +136,12 @@ apply_album_override = _bind(playlists, "apply_album_override")
 start_scan = _bind(scan, "start_scan")
 cancel_scan = _bind(scan, "cancel_scan")
 run_scan = _bind(scan, "run_scan")
+
+# MusicBrainz bindings (no context needed - they use module-level state)
+resolve_spotify_to_mb = musicbrainz.resolve_spotify_to_mb
+get_artist_release_groups = musicbrainz.get_artist_release_groups
+get_artist_active = musicbrainz.get_artist_active
+get_albums_with_future_dates = musicbrainz.get_albums_with_future_dates
 
 
 def endpoint_category(method, url):

@@ -19,6 +19,8 @@ def default_config():
         "cron_schedule": os.environ.get("CRON_SCHEDULE", "0 6 * * *"),
         "public_base_url": os.environ.get("PUBLIC_BASE_URL", "").rstrip("/"),
         "flask_secret_key": "",
+        "musicbrainz_active_refresh_days": int(os.environ.get("MUSICBRAINZ_ACTIVE_REFRESH_DAYS", "30")),
+        "verbose_logging": os.environ.get("VERBOSE_LOGGING", "false").lower() == "true",
     }
 
 

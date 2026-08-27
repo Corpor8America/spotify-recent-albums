@@ -19,7 +19,8 @@ from .auth import get_access_token, load_refresh_token
 from .config import CHECK_INTERVAL_DAYS, DEFAULT_DAYS_LOOKBACK, get_version, load_config
 from .filters import is_auto_excluded, is_effectively_excluded, parse_release_date
 from .logging import clear_logs, log
-from .models import Album, Artist, ScanProgress
+from .models import Album, Artist, MusicBrainzAlbum, ScanProgress
+from .musicbrainz import get_artist_active, get_albums_with_future_dates, resolve_spotify_to_mb
 from .playlists import add_tracks_to_playlist, get_album_track_uris, prune_playlist
 from .state import clear_expired_rate_limits, load_state, save_state, update_state
 
@@ -125,6 +126,9 @@ def run_scan(ctx, days=None, interval_days=None, min_request_interval=None, mark
         playlist_id = cfg["spotify_playlist_id"] or None
         blocked_categories = []
 
+        # Phase 0: Process MusicBrainz upcoming releases releasing today
+        _process_upcoming_releases(ctx, state)
+
         artists = _fetch_followed_artists(ctx, token, state, blocked_categories)
         if artists:
             plan = _plan_artists(ctx, state, artists, interval_days, blocked_categories)
@@ -150,6 +154,20 @@ def _authenticate(ctx, cfg):
         log("Not connected to Spotify yet -- visit /login first.")
         return None
     return get_access_token(ctx, client_id, client_secret, refresh_token)
+
+
+def _process_upcoming_releases(ctx, state):
+    """Check MusicBrainz upcoming albums for releases due today and remove them from the upcoming list."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    to_remove = []
+    for rg_id, album in state.musicbrainz_upcoming.items():
+        if album.release_date <= today:
+            to_remove.append(rg_id)
+            log(f"MB: releasing today -- searching Spotify for '{album.name}' by {album.artist}")
+    for rg_id in to_remove:
+        del state.musicbrainz_upcoming[rg_id]
+    if to_remove:
+        save_state(ctx, state)
 
 
 def _fetch_followed_artists(ctx, token, state, blocked_categories):
@@ -193,6 +211,9 @@ def _plan_artists(ctx, state, artists, interval_days, blocked_categories):
 
 def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked_categories):
     due_artists, processed_ids = plan
+    cfg = load_config(ctx)
+    verbose = cfg.get("verbose_logging", False)
+    mb_refresh_days = cfg.get("musicbrainz_active_refresh_days", 30)
     cutoff = datetime.now() - timedelta(days=days)
     now_iso = datetime.now(timezone.utc).isoformat()
     try:
@@ -202,7 +223,96 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
             if _cancel_event.is_set():
                 log("  Scan cancelled by user.")
                 break
-            log(f"  [{i}/{len(due_artists)}] {artist['name']} - fetching albums...")
+
+            # --- MusicBrainz integration ---
+            artist_entry = state.artists.get(artist["id"])
+            if artist_entry is None:
+                artist_entry = Artist(id=artist["id"], name=artist["name"])
+                state.artists[artist["id"]] = artist_entry
+
+            # Step 1: Resolve MusicBrainz ID if not cached
+            if not artist_entry.musicbrainz_id:
+                mbid = resolve_spotify_to_mb(artist["id"])
+                if mbid:
+                    artist_entry.musicbrainz_id = mbid
+                    log(f"MB: resolved {artist['name']} → {mbid}")
+                else:
+                    log(f"MB: no MusicBrainz mapping for {artist['name']}, skipping MB features")
+
+            # Step 2: Check active status (only for artists currently marked active)
+            if artist_entry.musicbrainz_id and artist_entry.mb_active:
+                if not artist_entry.mb_active_checked:
+                    # First time check
+                    is_active = get_artist_active(artist_entry.musicbrainz_id)
+                    artist_entry.mb_active = is_active
+                    artist_entry.mb_active_checked = now_iso
+                    log(f"MB: {artist['name']} is {'active' if is_active else 'inactive'}")
+                else:
+                    # Check if refresh is due
+                    try:
+                        last_checked_dt = datetime.fromisoformat(artist_entry.mb_active_checked)
+                        days_since = (datetime.now(timezone.utc) - last_checked_dt).days
+                        if days_since >= mb_refresh_days:
+                            is_active = get_artist_active(artist_entry.musicbrainz_id)
+                            artist_entry.mb_active = is_active
+                            artist_entry.mb_active_checked = now_iso
+                            log(f"MB: {artist['name']} is {'active' if is_active else 'inactive'}")
+                    except (ValueError, TypeError):
+                        pass
+
+            # Step 3: Fetch MusicBrainz upcoming releases
+            if artist_entry.musicbrainz_id:
+                try:
+                    upcoming = get_albums_with_future_dates(ctx, artist_entry.musicbrainz_id)
+                    if upcoming:
+                        log(f"MB: {len(upcoming)} upcoming album(s) for {artist['name']}")
+                        for rg in upcoming:
+                            rg_id = rg["id"]
+                            if rg_id not in state.musicbrainz_upcoming:
+                                state.musicbrainz_upcoming[rg_id] = MusicBrainzAlbum(
+                                    id=rg_id,
+                                    name=rg.get("title", ""),
+                                    artist=artist["name"],
+                                    artist_id=artist["id"],
+                                    release_date=rg.get("first-release-date", ""),
+                                    first_seen=now_iso,
+                                )
+                        save_state(ctx, state)
+                except Exception as e:
+                    log(f"MB: failed to fetch release groups for {artist['name']}: {e}")
+
+            # Step 4: Skip logic
+            # If artist has any MusicBrainz upcoming album with a future release date → skip Spotify check
+            has_upcoming = any(
+                mb.artist_id == artist["id"] and mb.release_date > datetime.now().strftime("%Y-%m-%d")
+                for mb in state.musicbrainz_upcoming.values()
+            )
+            if has_upcoming:
+                if verbose:
+                    log(f"  [{i}/{len(due_artists)}] {artist['name']} - skipping (upcoming MB release)")
+                else:
+                    log(f"  [{i}/{len(due_artists)}] {artist['name']} — skipped (upcoming MB release)")
+                processed_ids.add(artist["id"])
+                state.in_progress.processed_ids = list(processed_ids)
+                save_state(ctx, state)
+                continue
+
+            # If inactive and no upcoming MB albums → skip
+            if not artist_entry.mb_active and not has_upcoming:
+                if verbose:
+                    log(f"  [{i}/{len(due_artists)}] {artist['name']} - skipping (inactive)")
+                else:
+                    log(f"  [{i}/{len(due_artists)}] {artist['name']} — skipped (inactive)")
+                processed_ids.add(artist["id"])
+                state.in_progress.processed_ids = list(processed_ids)
+                save_state(ctx, state)
+                continue
+
+            # --- Normal Spotify check ---
+            if verbose:
+                log(f"  [{i}/{len(due_artists)}] {artist['name']} - fetching albums...")
+            else:
+                log(f"  [{i}/{len(due_artists)}] {artist['name']} — fetching albums...")
             try:
                 albums = get_artist_albums(ctx, token, artist["id"], state, market)
             except RateLimitError:
@@ -223,7 +333,11 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
                 log("    No new albums added")
             state.artists[artist["id"]] = Artist(
                 id=artist["id"], name=artist["name"], last_checked=now_iso,
-                scanned_with=get_version(ctx))
+                scanned_with=get_version(ctx),
+                musicbrainz_id=artist_entry.musicbrainz_id,
+                mb_active=artist_entry.mb_active,
+                mb_active_checked=artist_entry.mb_active_checked,
+            )
             processed_ids.add(artist["id"])
             state.in_progress.processed_ids = list(processed_ids)
             save_state(ctx, state)

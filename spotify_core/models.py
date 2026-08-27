@@ -20,6 +20,14 @@ from typing import Optional
 
 from .filters import is_auto_excluded
 
+__all__ = [
+    "Album",
+    "Artist",
+    "MusicBrainzAlbum",
+    "ScanProgress",
+    "State",
+]
+
 
 @dataclass
 class Album:
@@ -78,6 +86,9 @@ class Artist:
     name: str
     last_checked: str = ""
     scanned_with: str = ""
+    musicbrainz_id: str = ""
+    mb_active: bool = True
+    mb_active_checked: str = ""
 
     @classmethod
     def from_dict(cls, artist_id, d):
@@ -86,6 +97,9 @@ class Artist:
             name=d.get("name", artist_id),
             last_checked=d.get("last_checked", ""),
             scanned_with=d.get("scanned_with", ""),
+            musicbrainz_id=d.get("musicbrainz_id", ""),
+            mb_active=bool(d.get("mb_active", True)),
+            mb_active_checked=d.get("mb_active_checked", ""),
         )
 
     def to_dict(self):
@@ -93,6 +107,39 @@ class Artist:
             "name": self.name,
             "last_checked": self.last_checked,
             "scanned_with": self.scanned_with,
+            "musicbrainz_id": self.musicbrainz_id,
+            "mb_active": self.mb_active,
+            "mb_active_checked": self.mb_active_checked,
+        }
+
+
+@dataclass
+class MusicBrainzAlbum:
+    id: str
+    name: str
+    artist: str
+    artist_id: str
+    release_date: str
+    first_seen: str
+
+    @classmethod
+    def from_dict(cls, album_id, d):
+        return cls(
+            id=album_id,
+            name=d.get("name", ""),
+            artist=d.get("artist", ""),
+            artist_id=d.get("artist_id", ""),
+            release_date=d.get("release_date", ""),
+            first_seen=d.get("first_seen", ""),
+        )
+
+    def to_dict(self):
+        return {
+            "name": self.name,
+            "artist": self.artist,
+            "artist_id": self.artist_id,
+            "release_date": self.release_date,
+            "first_seen": self.first_seen,
         }
 
 
@@ -118,6 +165,7 @@ class State:
     known_albums: dict = field(default_factory=dict)  # album_id -> Album
     in_progress: Optional[ScanProgress] = None
     rate_limits: dict = field(default_factory=dict)   # category -> unix ts
+    musicbrainz_upcoming: dict = field(default_factory=dict)  # rg_id -> MusicBrainzAlbum
 
     @classmethod
     def from_dict(cls, d):
@@ -130,6 +178,8 @@ class State:
                           for aid, entry in (d.get("known_albums") or {}).items()},
             in_progress=ScanProgress.from_dict(in_progress) if in_progress else None,
             rate_limits={k: int(v) for k, v in (d.get("rate_limits") or {}).items()},
+            musicbrainz_upcoming={rid: MusicBrainzAlbum.from_dict(rid, entry)
+                                 for rid, entry in (d.get("musicbrainz_upcoming") or {}).items()},
         )
 
     def to_dict(self):
@@ -138,4 +188,5 @@ class State:
             "known_albums": {aid: a.to_dict() for aid, a in self.known_albums.items()},
             "in_progress": self.in_progress.to_dict() if self.in_progress else None,
             "rate_limits": dict(self.rate_limits),
+            "musicbrainz_upcoming": {rid: a.to_dict() for rid, a in self.musicbrainz_upcoming.items()},
         }

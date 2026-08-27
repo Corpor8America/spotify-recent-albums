@@ -133,6 +133,8 @@ def create_app():
                     "days_lookback": _parse_int_field(request.form, "days_lookback", existing["days_lookback"], min_value=0),
                     "cron_schedule": request.form.get("cron_schedule", existing["cron_schedule"]).strip(),
                     "public_base_url": request.form.get("public_base_url", existing["public_base_url"]).rstrip("/"),
+                    "musicbrainz_active_refresh_days": _parse_int_field(request.form, "musicbrainz_active_refresh_days", existing.get("musicbrainz_active_refresh_days", 30), min_value=1),
+                    "verbose_logging": request.form.get("verbose_logging") == "true",
                 }
                 _validate_cron_schedule(c["cron_schedule"])
                 if c["spotify_playlist_id"] and not re.fullmatch(r"[A-Za-z0-9]{15,}", c["spotify_playlist_id"]):
@@ -172,7 +174,6 @@ def create_app():
             playlist_id=c["spotify_playlist_id"],
             report_albums=core.get_report_albums(state, c["days_lookback"]),
             excluded_albums=core.get_excluded_albums(state),
-            upcoming_albums=core.get_upcoming_albums(state),
             in_progress=state.in_progress,
             rate_limits={
                 cat: format_rate_limit_until(ts)
@@ -262,6 +263,8 @@ def create_app():
                     "scanned_with": info.scanned_with,
                     "is_due": aid in due_ids,
                     "is_processed": state.in_progress is not None and aid not in due_ids,
+                    "musicbrainz_id": info.musicbrainz_id,
+                    "mb_active": info.mb_active,
                 }
                 for aid, info in state.artists.items()
             ],
@@ -270,6 +273,20 @@ def create_app():
         return render_template("artists.html", artists=artists, version=core.get_version(),
                                scan_running=core.run_lock.locked(),
                                scan_in_progress=state.in_progress is not None)
+
+    @app.route("/artists/<artist_id>/toggle-active", methods=["POST"])
+    def toggle_active(artist_id):
+        if not core.is_configured():
+            return redirect(url_for("settings"))
+        state = core.load_state()
+        artist = state.artists.get(artist_id)
+        if not artist:
+            return "Unknown artist", 404
+        artist.mb_active = not artist.mb_active
+        artist.mb_active_checked = ""  # Force re-check on next scan
+        core.save_state(state)
+        core.log(f"Toggled active status for {artist.name}: {'active' if artist.mb_active else 'inactive'}")
+        return redirect(url_for("artists_list"))
 
     # --- Debug / Artist Inspector ------------------------------------------------
 

@@ -44,8 +44,8 @@ class StateFileTests(ContextTestCase):
         )
         core.save_state(original)
         raw = json.loads((self.tmp_path / "spotify-state.json").read_text())
-        self.assertEqual(set(raw.keys()), {"artists", "known_albums", "in_progress", "rate_limits"})
-        self.assertEqual(set(raw["artists"]["a1"].keys()), {"name", "last_checked", "scanned_with"})
+        self.assertEqual(set(raw.keys()), {"artists", "known_albums", "in_progress", "rate_limits", "musicbrainz_upcoming"})
+        self.assertEqual(set(raw["artists"]["a1"].keys()), {"name", "last_checked", "scanned_with", "musicbrainz_id", "mb_active", "mb_active_checked"})
 
     def test_clear_expired_rate_limits_removes_only_past_entries(self):
         state = State(rate_limits={"expired": 99, "future": 101})

@@ -73,29 +73,6 @@
   {% endif %}
 </div>
 
-{% if upcoming_albums %}
-<div class="card">
-  <h2><span class="material-symbols-outlined">schedule</span> Upcoming releases ({{ upcoming_albums|length }})</h2>
-  <p class="muted" style="margin-bottom: 1.25rem;">Albums announced on Spotify but not yet released. They'll be added to the playlist on release day.</p>
-  <div class="table-container">
-    <table class="releases-table">
-      <thead>
-        <tr><th>Artist</th><th>Album</th><th>Releases</th></tr>
-      </thead>
-      <tbody>
-        {% for a in upcoming_albums %}
-        <tr>
-          <td>{{ a.artist }}</td>
-          <td><a href="{{ a.url }}" target="_blank" style="font-weight: 500;">{{ a.name }}</a></td>
-          <td>{{ a.release_date }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</div>
-{% endif %}
-
 <div class="card">
   <h2><span class="material-symbols-outlined">album</span> Recent releases ({{ report_albums|length }})</h2>
   <div class="table-container">
@@ -110,19 +87,23 @@
           <td><a href="{{ a.url }}" target="_blank" style="font-weight: 500;">{{ a.name }}</a></td>
           <td>{{ a.release_date }}</td>
           <td>
-            {% if a.added_to_playlist %}
+            {% if a.id.startswith('mb_') %}
+              <span class="badge warn" style="padding: 0.15rem 0.5rem; font-size: 0.7rem; border-radius: 6px;">upcoming</span>
+            {% elif a.added_to_playlist %}
               <span class="badge ok" style="padding: 0.15rem 0.5rem; font-size: 0.7rem; border-radius: 6px;">added</span>
             {% else %}
               <span class="muted">-</span>
             {% endif %}
           </td>
           <td>
+            {% if not a.id.startswith('mb_') %}
             <form method="post" action="{{ url_for('set_override', album_id=a.id) }}" style="display:inline">
               <input type="hidden" name="value" value="true">
               <button class="btn small secondary" type="submit">
                 <span class="material-symbols-outlined" style="font-size: 14px;">block</span> Exclude
               </button>
             </form>
+            {% endif %}
           </td>
         </tr>
         {% else %}

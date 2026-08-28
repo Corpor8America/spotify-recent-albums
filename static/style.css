@@ -384,41 +384,133 @@ tr:hover td {
   background-color: var(--md-sys-color-surface-container-high);
 }
 
-/* Console logs */
-pre.log {
-  background-color: var(--md-sys-color-surface-container-lowest);
-  border: 1px solid var(--md-sys-color-outline-variant);
-  color: #a7f3d0;
-  /* Soft terminal green */
-  padding: 1.25rem;
-  border-radius: 12px;
-  max-height: 320px;
+/* Activity Log Feed */
+.log-feed {
+  max-height: 400px;
   overflow-y: auto;
-  font-family: 'Consolas', 'Fira Code', 'Courier New', monospace;
-  font-size: 0.8rem;
-  line-height: 1.4;
-  white-space: pre-wrap;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.25rem;
+  border-radius: 12px;
+  background-color: var(--md-sys-color-surface-container-low);
+  border: 1px solid var(--md-sys-color-surface-variant);
 }
 
-/* Monospace scrollbar customization */
-pre.log::-webkit-scrollbar,
+.log-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-radius: 10px;
+  background-color: var(--md-sys-color-surface);
+  border-left: 3px solid var(--md-sys-color-outline);
+  transition: background-color var(--md-transition-duration) var(--md-transition-timing),
+    transform var(--md-transition-duration) var(--md-transition-timing);
+}
+
+.log-entry:hover {
+  background-color: var(--md-sys-color-surface-container-high);
+  transform: translateX(2px);
+}
+
+.log-timestamp {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--md-sys-color-on-surface-variant);
+  white-space: nowrap;
+  min-width: 65px;
+  padding-top: 2px;
+  font-family: 'Consolas', 'Fira Code', monospace;
+}
+
+.log-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.log-message {
+  font-size: 0.875rem;
+  color: var(--md-sys-color-on-surface);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.log-empty {
+  text-align: center;
+  padding: 2rem;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.9rem;
+}
+
+/* Log type color coding */
+.log-info {
+  border-left-color: var(--md-sys-color-primary);
+}
+
+.log-info .log-icon {
+  color: var(--md-sys-color-primary);
+}
+
+.log-success {
+  border-left-color: var(--md-sys-color-success);
+}
+
+.log-success .log-icon {
+  color: var(--md-sys-color-success);
+}
+
+.log-warn {
+  border-left-color: var(--md-sys-color-warning);
+}
+
+.log-warn .log-icon {
+  color: var(--md-sys-color-warning);
+}
+
+.log-error {
+  border-left-color: var(--md-sys-color-error);
+}
+
+.log-error .log-icon {
+  color: var(--md-sys-color-error);
+}
+
+/* Log feed scrollbar */
+.log-feed::-webkit-scrollbar {
+  width: 8px;
+}
+
+.log-feed::-webkit-scrollbar-track {
+  background: var(--md-sys-color-surface-container-low);
+  border-radius: 4px;
+}
+
+.log-feed::-webkit-scrollbar-thumb {
+  background: var(--md-sys-color-surface-container-highest);
+  border-radius: 4px;
+}
+
+.log-feed::-webkit-scrollbar-thumb:hover {
+  background: var(--md-sys-color-primary);
+}
+
+/* Shared scrollbar styles for tables */
 .table-container::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
-pre.log::-webkit-scrollbar-track,
 .table-container::-webkit-scrollbar-track {
   background: var(--md-sys-color-surface-container-lowest);
 }
 
-pre.log::-webkit-scrollbar-thumb,
 .table-container::-webkit-scrollbar-thumb {
   background: var(--md-sys-color-surface-container-highest);
   border-radius: 4px;
 }
 
-pre.log::-webkit-scrollbar-thumb:hover,
 .table-container::-webkit-scrollbar-thumb:hover {
   background: var(--md-sys-color-primary);
 }

@@ -146,9 +146,18 @@
 </div>
 
 <div class="card">
-  <h2><span class="material-symbols-outlined">terminal</span> Recent activity</h2>
-  <pre class="log">{% for line in logs %}{{ line }}
-{% endfor %}</pre>
+  <h2><span class="material-symbols-outlined">history</span> Recent activity</h2>
+  <div class="log-feed" id="log-feed">
+    {% for line in logs %}
+    <div class="log-entry" data-raw="{{ line|e }}">
+      <div class="log-entry-content">
+        <span class="log-message">{{ line }}</span>
+      </div>
+    </div>
+    {% else %}
+    <div class="log-empty">No activity yet -- run a scan to see logs here.</div>
+    {% endfor %}
+  </div>
 </div>
 
 <p class="footer-text">version {{ version }}</p>
@@ -156,7 +165,42 @@
 
 {% block scripts %}
 <script>
-  var logBox = document.querySelector('.log');
-  if (logBox) logBox.scrollTop = logBox.scrollHeight;
+  (function() {
+    var feed = document.getElementById('log-feed');
+    if (!feed) return;
+
+    var entries = feed.querySelectorAll('.log-entry');
+    entries.forEach(function(entry) {
+      var raw = entry.getAttribute('data-raw') || '';
+      var match = raw.match(/^(\d{2}:\d{2}:\d{2})\s+(.*)/);
+      var timestamp = match ? match[1] : '';
+      var message = match ? match[2] : raw;
+
+      var type = 'info';
+      var lower = message.toLowerCase();
+      if (/error|fail|exception|rate.limit|denied/.test(lower)) {
+        type = 'error';
+      } else if (/warn|warning/.test(lower)) {
+        type = 'warn';
+      } else if (/success|added|connected|completed|saved|done|created/.test(lower)) {
+        type = 'success';
+      }
+
+      var iconMap = {
+        info: 'info',
+        success: 'check_circle',
+        warn: 'warning',
+        error: 'error'
+      };
+
+      entry.classList.add('log-' + type);
+      entry.innerHTML =
+        '<span class="log-timestamp">' + timestamp + '</span>' +
+        '<span class="log-icon material-symbols-outlined">' + (iconMap[type] || 'info') + '</span>' +
+        '<span class="log-message">' + message + '</span>';
+    });
+
+    feed.scrollTop = feed.scrollHeight;
+  })();
 </script>
 {% endblock %}

@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock
 import spotify_core as core
 from spotify_core.api import ARTIST_ALBUMS_CATEGORY
 from spotify_core.models import Album, Artist, ScanProgress, State
-from spotify_core.scan import get_due_artists, record_album, _plan_artists, _build_priority_order, _maybe_auto_disable_priority_scan, _maybe_auto_reorder
+from spotify_core.scan import get_due_artists, record_album, _plan_artists, _build_priority_order, _maybe_auto_disable_priority_scan, _maybe_auto_reorder, _should_use_priority_scan, AUTO_PRIORITY_MIN_DUE_ARTISTS, AUTO_PRIORITY_MIN_DUE_RATIO
 from tests.support import ContextTestCase
 
 
@@ -54,6 +54,51 @@ class GetDueArtistsTests(unittest.TestCase):
         })
         due = get_due_artists(artists, state, 3)
         self.assertEqual([a["id"] for a in due], ["a2"])
+
+
+class ShouldUsePriorityScanTests(unittest.TestCase):
+    """Tests for _should_use_priority_scan heuristic."""
+
+    def test_config_flag_overrides_thresholds(self):
+        """Explicit config flag forces priority regardless of batch size."""
+        cfg = {"musicbrainz_priority_scan": True}
+        self.assertTrue(_should_use_priority_scan(cfg, 1, 100))
+
+    def test_config_flag_false_does_not_override(self):
+        cfg = {"musicbrainz_priority_scan": False}
+        self.assertFalse(_should_use_priority_scan(cfg, 1, 100))
+
+    def test_returns_false_when_total_zero(self):
+        cfg = {}
+        self.assertFalse(_should_use_priority_scan(cfg, 0, 0))
+
+    def test_returns_false_when_total_negative(self):
+        cfg = {}
+        self.assertFalse(_should_use_priority_scan(cfg, 5, -1))
+
+    def test_below_min_due_count(self):
+        cfg = {}
+        self.assertFalse(_should_use_priority_scan(cfg, AUTO_PRIORITY_MIN_DUE_ARTISTS - 1, 100))
+
+    def test_at_min_due_count_but_low_ratio(self):
+        cfg = {}
+        # 20 out of 200 = 10%, below 20% ratio
+        self.assertFalse(_should_use_priority_scan(cfg, AUTO_PRIORITY_MIN_DUE_ARTISTS, 200))
+
+    def test_above_min_due_count_and_ratio(self):
+        cfg = {}
+        # 25 out of 100 = 25%, above both thresholds
+        self.assertTrue(_should_use_priority_scan(cfg, 25, 100))
+
+    def test_exact_ratio_threshold(self):
+        cfg = {}
+        # 20 out of 100 = 20%, exactly at ratio
+        self.assertTrue(_should_use_priority_scan(cfg, AUTO_PRIORITY_MIN_DUE_ARTISTS, 100))
+
+    def test_high_ratio_but_low_absolute_count(self):
+        cfg = {}
+        # 100% of 5 artists = ratio met, but only 5 due (< 20 min)
+        self.assertFalse(_should_use_priority_scan(cfg, 5, 5))
 
 
 class RecordAlbumTests(unittest.TestCase):
@@ -281,7 +326,7 @@ class PlanArtistsTests(ContextTestCase):
 
     def test_use_priority_false_returns_three_values(self):
         artists = self._artists()
-        result = _plan_artists(self.ctx, State(), artists, 7, [], 365, use_priority=False)
+        result = _plan_artists(self.ctx, State(), artists, 7, [], 365, cfg={})
         self.assertIsNotNone(result)
         self.assertEqual(len(result), 3)
         due, processed, used_priority = result
@@ -290,7 +335,7 @@ class PlanArtistsTests(ContextTestCase):
     def test_use_priority_false_order_unchanged(self):
         artists = self._artists()
         state = State()
-        due, _, _ = _plan_artists(self.ctx, state, artists, 7, [], 365, use_priority=False)
+        due, _, _ = _plan_artists(self.ctx, state, artists, 7, [], 365, cfg={})
         due_ids = [a["id"] for a in due]
         # Should be same as get_due_artists output
         expected = [a["id"] for a in get_due_artists(artists, state, 7)]
@@ -300,7 +345,7 @@ class PlanArtistsTests(ContextTestCase):
     def test_use_priority_true_reorders(self, mock_build):
         artists = self._artists()
         due, _, used_priority = _plan_artists(
-            self.ctx, State(), artists, 7, [], 365, use_priority=True)
+            self.ctx, State(), artists, 7, [], 365, cfg={"musicbrainz_priority_scan": True})
         self.assertTrue(used_priority)
         due_ids = [a["id"] for a in due]
         self.assertEqual(due_ids[0], "a2")
@@ -310,8 +355,8 @@ class PlanArtistsTests(ContextTestCase):
     def test_use_priority_true_zero_hits_same_order(self, mock_build):
         artists = self._artists()
         state = State()
-        due_default, _, _ = _plan_artists(self.ctx, State(), artists, 7, [], 365, use_priority=False)
-        due_priority, _, used_priority = _plan_artists(self.ctx, state, artists, 7, [], 365, use_priority=True)
+        due_default, _, _ = _plan_artists(self.ctx, State(), artists, 7, [], 365, cfg={})
+        due_priority, _, used_priority = _plan_artists(self.ctx, state, artists, 7, [], 365, cfg={"musicbrainz_priority_scan": True})
         self.assertTrue(used_priority)
         # Zero MB hits -> same order as get_due_artists
         self.assertEqual([a["id"] for a in due_priority], [a["id"] for a in due_default])
@@ -319,14 +364,14 @@ class PlanArtistsTests(ContextTestCase):
     def test_blocked_category_returns_none(self):
         artists = self._artists()
         state = State(rate_limits={ARTIST_ALBUMS_CATEGORY: int(time.time()) + 3600})
-        result = _plan_artists(self.ctx, state, artists, 7, [], 365, use_priority=True)
+        result = _plan_artists(self.ctx, state, artists, 7, [], 365, cfg={"musicbrainz_priority_scan": True})
         self.assertIsNone(result)
 
     def test_resume_preserves_processed_ids(self):
         artists = self._artists()
         state = State(in_progress=ScanProgress(
             due_ids=["a1", "a2", "a3"], processed_ids=["a1"]))
-        result = _plan_artists(self.ctx, state, artists, 7, [], 365, use_priority=False)
+        result = _plan_artists(self.ctx, state, artists, 7, [], 365, cfg={})
         self.assertIsNotNone(result)
         due, processed, _ = result
         self.assertIn("a1", processed)
@@ -337,7 +382,7 @@ class PlanArtistsTests(ContextTestCase):
         state = State(in_progress=ScanProgress(
             due_ids=["a1", "a2", "a3"], processed_ids=["a1"]))
         due, processed, used_priority = _plan_artists(
-            self.ctx, state, artists, 7, [], 365, use_priority=True)
+            self.ctx, state, artists, 7, [], 365, cfg={"musicbrainz_priority_scan": True})
         self.assertTrue(used_priority)
         due_ids = [a["id"] for a in due]
         # a1 is processed, should be first
@@ -350,7 +395,7 @@ class PlanArtistsTests(ContextTestCase):
     def test_use_priority_false_does_not_call_build(self):
         artists = self._artists()
         with patch("spotify_core.scan._build_priority_order") as mock_build:
-            _plan_artists(self.ctx, State(), artists, 7, [], 365, use_priority=False)
+            _plan_artists(self.ctx, State(), artists, 7, [], 365, cfg={})
             mock_build.assert_not_called()
 
     def test_blocked_category_preserves_setting(self):
@@ -359,10 +404,44 @@ class PlanArtistsTests(ContextTestCase):
         artists = self._artists()
         state = State(rate_limits={ARTIST_ALBUMS_CATEGORY: int(time.time()) + 3600})
         self.write_config({"musicbrainz_priority_scan": True})
-        result = _plan_artists(self.ctx, state, artists, 7, [], 365, use_priority=True)
+        result = _plan_artists(self.ctx, state, artists, 7, [], 365, cfg={"musicbrainz_priority_scan": True})
         self.assertIsNone(result)
         cfg = core.load_config()
         self.assertTrue(cfg["musicbrainz_priority_scan"])
+
+    @patch("spotify_core.scan._build_priority_order", return_value=["a3", "a2", "a1"])
+    def test_auto_heuristic_triggers_on_large_batch(self, mock_build):
+        """When due_count >= 20 and ratio >= 20%, priority activates automatically."""
+        artists = [artist_payload(f"a{i}", f"Artist {i}") for i in range(30)]
+        # All artists are due (no history), so due_count=30, total=30 -> 100% ratio
+        result = _plan_artists(self.ctx, State(), artists, 7, [], 365,
+                               cfg={}, total_artist_count=30)
+        self.assertIsNotNone(result)
+        _, _, used_priority = result
+        self.assertTrue(used_priority)
+        mock_build.assert_called_once()
+
+    @patch("spotify_core.scan._build_priority_order")
+    def test_auto_heuristic_skips_small_batch(self, mock_build):
+        """When due_count < 20, priority does not activate even with high ratio."""
+        artists = [artist_payload(f"a{i}", f"Artist {i}") for i in range(5)]
+        result = _plan_artists(self.ctx, State(), artists, 7, [], 365,
+                               cfg={}, total_artist_count=5)
+        self.assertIsNotNone(result)
+        _, _, used_priority = result
+        self.assertFalse(used_priority)
+        mock_build.assert_not_called()
+
+    @patch("spotify_core.scan._build_priority_order", return_value=["a3", "a2", "a1"])
+    def test_config_flag_overrides_heuristic(self, mock_build):
+        """Explicit config flag forces priority even when batch is small."""
+        artists = self._artists()  # 3 artists, below threshold
+        result = _plan_artists(self.ctx, State(), artists, 7, [], 365,
+                               cfg={"musicbrainz_priority_scan": True})
+        self.assertIsNotNone(result)
+        _, _, used_priority = result
+        self.assertTrue(used_priority)
+        mock_build.assert_called_once()
 
 
 class AutoDisablePriorityScanTests(ContextTestCase):
@@ -479,9 +558,10 @@ class RunScanWiringTests(ContextTestCase):
             core.run_scan(days=180, interval_days=3, min_request_interval=0)
             mock_plan.assert_called_once()
             args, kwargs = mock_plan.call_args
-            # args: (ctx, state, artists, interval_days, blocked_categories, days, use_priority)
+            # args: (ctx, state, artists, interval_days, blocked_categories, days, cfg)
             self.assertEqual(args[5], 180)  # days_lookback
-            self.assertTrue(args[6])  # use_priority
+            self.assertTrue(args[6].get("musicbrainz_priority_scan"))  # cfg dict has flag
+            self.assertEqual(kwargs.get("total_artist_count"), 1)  # len(artists)
 
     def test_process_artists_receives_two_item_plan(self):
         artists = [artist_payload("a1", "A")]
@@ -532,7 +612,7 @@ class RunScanWiringTests(ContextTestCase):
             mock_plan.return_value = ([], set(), False)
             core.run_scan(days=365, interval_days=3, min_request_interval=0)
             args, kwargs = mock_plan.call_args
-            self.assertTrue(args[6])  # use_priority
+            self.assertTrue(args[6].get("musicbrainz_priority_scan"))  # cfg dict has flag
 
     def test_priority_scan_disabled_by_default(self):
         artists = [artist_payload("a1", "A")]
@@ -543,7 +623,8 @@ class RunScanWiringTests(ContextTestCase):
             mock_plan.return_value = ([], set(), False)
             core.run_scan(days=365, interval_days=3, min_request_interval=0)
             args, kwargs = mock_plan.call_args
-            self.assertFalse(args[6])  # use_priority
+            # cfg dict should not have musicbrainz_priority_scan or it should be False
+            self.assertFalse(args[6].get("musicbrainz_priority_scan", False))
 
 
 if __name__ == "__main__":

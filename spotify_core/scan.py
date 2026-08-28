@@ -34,6 +34,9 @@ reorder_lock = threading.Lock()
 # Cancel event -- set by POST /cancel to abort a running scan.
 _cancel_event = threading.Event()
 
+AUTO_PRIORITY_MIN_DUE_ARTISTS = 20
+AUTO_PRIORITY_MIN_DUE_RATIO = 0.20
+
 
 def _fmt_ts(ts):
     return datetime.fromtimestamp(ts).astimezone().strftime("%Y-%m-%d %I:%M:%S %p")
@@ -140,7 +143,8 @@ def run_scan(ctx, days=None, interval_days=None, min_request_interval=None, mark
                 interval_days,
                 blocked_categories,
                 days,
-                cfg.get("musicbrainz_priority_scan", False),
+                cfg,
+                total_artist_count=len(artists),
             )
             if plan is not None:
                 due_artists, processed_ids, used_priority = plan
@@ -244,11 +248,23 @@ def _build_priority_order(ctx, state, artists, days_lookback):
     return ordered_ids
 
 
+def _should_use_priority_scan(cfg, due_count, total_count):
+    if cfg.get("musicbrainz_priority_scan", False):
+        return True
+    if total_count <= 0:
+        return False
+    return (
+        due_count >= AUTO_PRIORITY_MIN_DUE_ARTISTS
+        and (due_count / total_count) >= AUTO_PRIORITY_MIN_DUE_RATIO
+    )
+
+
 def _plan_artists(ctx, state, artists, interval_days, blocked_categories,
-                  days_lookback, use_priority=False):
+                  days_lookback, cfg=None, total_artist_count=None):
     """Resume an interrupted scan or start a fresh batch. Returns
     (due_artists, processed_ids, used_priority) or None when the album
     phase is blocked."""
+    cfg = cfg or {}
     ip = state.in_progress
     if ip is not None:
         processed_ids = set(ip.processed_ids)
@@ -274,6 +290,9 @@ def _plan_artists(ctx, state, artists, interval_days, blocked_categories,
         return None
 
     used_priority = False
+    total_count = total_artist_count if total_artist_count is not None else len(artists)
+    use_priority = _should_use_priority_scan(cfg, len(remaining_artists), total_count)
+
     if use_priority and remaining_artists:
         priority_ids = _build_priority_order(ctx, state, remaining_artists, days_lookback)
         priority_set = set(priority_ids)

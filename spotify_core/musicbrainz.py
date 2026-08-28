@@ -1,10 +1,11 @@
 """MusicBrainz API integration for upcoming album discovery and artist active status."""
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 
+from .filters import parse_release_date
 from .logging import log
 
 # MusicBrainz requires 1 request/second minimum interval
@@ -120,3 +121,18 @@ def get_albums_with_future_dates(ctx, mbid):
         if release_date and release_date > today:
             upcoming.append(rg)
     return upcoming
+
+
+def get_albums_in_window(ctx, mbid, days_lookback):
+    """Get release-groups with first-release-date within
+    [today - days_lookback, today], inclusive. Used to prioritize a large
+    backlog scan; not a substitute for the Spotify-side date check."""
+    cutoff = datetime.now() - timedelta(days=days_lookback)
+    now = datetime.now()
+    release_groups = get_artist_release_groups(ctx, mbid)
+    in_window = []
+    for rg in release_groups:
+        parsed = parse_release_date(rg.get("first-release-date", ""))
+        if parsed is not None and cutoff <= parsed <= now:
+            in_window.append(rg)
+    return in_window

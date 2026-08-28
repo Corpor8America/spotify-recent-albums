@@ -62,6 +62,7 @@ from .playlists import (
     create_playlist,
     get_album_track_uris,
     get_playlist_track_uris,
+    playlist_order_is_stale,
     prune_playlist,
     remove_tracks_from_playlist,
     reorder_playlist,
@@ -142,6 +143,7 @@ resolve_spotify_to_mb = musicbrainz.resolve_spotify_to_mb
 get_artist_release_groups = musicbrainz.get_artist_release_groups
 get_artist_active = musicbrainz.get_artist_active
 get_albums_with_future_dates = musicbrainz.get_albums_with_future_dates
+get_albums_in_window = musicbrainz.get_albums_in_window
 
 
 def endpoint_category(method, url):

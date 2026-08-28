@@ -21,6 +21,7 @@ def default_config():
         "flask_secret_key": "",
         "musicbrainz_active_refresh_days": int(os.environ.get("MUSICBRAINZ_ACTIVE_REFRESH_DAYS", "30")),
         "verbose_logging": os.environ.get("VERBOSE_LOGGING", "false").lower() == "true",
+        "musicbrainz_priority_scan": os.environ.get("MUSICBRAINZ_PRIORITY_SCAN", "false").lower() == "true",
     }
 
 

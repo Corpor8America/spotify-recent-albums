@@ -105,6 +105,15 @@
           <span class="helper-text">Re-check active artists on MusicBrainz every N days</span>
         </div>
       </div>
+      <div class="settings-row" style="grid-template-columns: 1fr;">
+        <div class="form-field">
+          <label for="musicbrainz_priority_scan">
+            <input type="checkbox" id="musicbrainz_priority_scan" name="musicbrainz_priority_scan" value="true" {% if config.musicbrainz_priority_scan %}checked{% endif %}>
+            Prioritize artists with recent MusicBrainz releases during the next full catch-up scan
+          </label>
+          <span class="helper-text">This turns itself off after the scan completes cleanly.</span>
+        </div>
+      </div>
     </div>
 
     <!-- Group: Logging -->

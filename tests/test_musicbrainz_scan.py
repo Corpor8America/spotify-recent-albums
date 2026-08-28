@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import spotify_core as core
 from spotify_core.models import Album, Artist, MusicBrainzAlbum, State
-from spotify_core.scan import _process_upcoming_releases
+from spotify_core.scan import _build_priority_order, _process_upcoming_releases
 from tests.support import ContextTestCase
 
 
@@ -294,6 +294,111 @@ class MbSkipLogicTests(ContextTestCase):
             core.run_scan(days=365, interval_days=3, min_request_interval=0)
 
         mock_albums.assert_called_once()
+
+
+class BuildPriorityOrderTests(ContextTestCase):
+    """Tests for _build_priority_order."""
+
+    def setUp(self):
+        super().setUp()
+        self.write_token("test-token")
+
+    def _artist(self, artist_id, name):
+        return {"id": artist_id, "name": name}
+
+    @patch("spotify_core.scan.get_albums_in_window")
+    @patch("spotify_core.scan.resolve_spotify_to_mb")
+    def test_resolves_and_persists_mb_id(self, mock_resolve, mock_in_window):
+        mock_resolve.return_value = "mb-123"
+        mock_in_window.return_value = []
+        artists = [self._artist("a1", "Test")]
+        state = State()
+        _build_priority_order(MagicMock(), state, artists, 365)
+        self.assertEqual(state.artists["a1"].musicbrainz_id, "mb-123")
+
+    @patch("spotify_core.scan.get_albums_in_window")
+    @patch("spotify_core.scan.resolve_spotify_to_mb")
+    def test_skips_unresolvable_artists(self, mock_resolve, mock_in_window):
+        mock_resolve.return_value = None
+        artists = [self._artist("a1", "Unknown")]
+        state = State()
+        result = _build_priority_order(MagicMock(), state, artists, 365)
+        self.assertEqual(result, [])
+
+    @patch("spotify_core.scan.get_albums_in_window")
+    @patch("spotify_core.scan.resolve_spotify_to_mb")
+    def test_sorts_by_release_date_ascending(self, mock_resolve, mock_in_window):
+        mock_resolve.return_value = "mb-123"
+        artists = [self._artist("a1", "Test")]
+        state = State()
+        mock_in_window.return_value = [
+            {"id": "rg1", "first-release-date": "2026-06-01"},
+            {"id": "rg2", "first-release-date": "2026-03-01"},
+        ]
+        result = _build_priority_order(MagicMock(), state, artists, 365)
+        # Only one artist, but should appear once
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], "a1")
+
+    @patch("spotify_core.scan.get_albums_in_window")
+    @patch("spotify_core.scan.resolve_spotify_to_mb")
+    def test_dedupes_artist_with_multiple_releases(self, mock_resolve, mock_in_window):
+        mock_resolve.return_value = "mb-123"
+        artists = [self._artist("a1", "Prolific")]
+        state = State()
+        mock_in_window.return_value = [
+            {"id": "rg1", "first-release-date": "2026-01-01"},
+            {"id": "rg2", "first-release-date": "2026-06-01"},
+        ]
+        result = _build_priority_order(MagicMock(), state, artists, 365)
+        self.assertEqual(result.count("a1"), 1)
+
+    @patch("spotify_core.scan.get_albums_in_window")
+    @patch("spotify_core.scan.resolve_spotify_to_mb")
+    def test_exception_does_not_abort_other_artists(self, mock_resolve, mock_in_window):
+        artists = [self._artist("a1", "Good"), self._artist("a2", "Bad")]
+        state = State()
+        state.artists["a1"] = Artist(id="a1", name="Good", musicbrainz_id="mb-good")
+        state.artists["a2"] = Artist(id="a2", name="Bad", musicbrainz_id="mb-bad")
+
+        def side_effect(ctx, mbid, days):
+            if mbid == "mb-bad":
+                raise RuntimeError("MB error")
+            return [{"id": "rg1", "first-release-date": "2026-06-01"}]
+
+        mock_in_window.side_effect = side_effect
+        result = _build_priority_order(MagicMock(), state, artists, 365)
+        self.assertEqual(result, ["a1"])
+
+    @patch("spotify_core.scan.get_albums_in_window")
+    def test_uses_cached_mbid(self, mock_in_window):
+        artists = [self._artist("a1", "Cached")]
+        state = State()
+        state.artists["a1"] = Artist(id="a1", name="Cached", musicbrainz_id="mb-cached")
+        mock_in_window.return_value = []
+        with patch("spotify_core.scan.resolve_spotify_to_mb") as mock_resolve:
+            _build_priority_order(MagicMock(), state, artists, 365)
+            mock_resolve.assert_not_called()
+
+    @patch("spotify_core.scan.get_albums_in_window")
+    @patch("spotify_core.scan.resolve_spotify_to_mb")
+    def test_sorts_across_artists(self, mock_resolve, mock_in_window):
+        artists = [self._artist("a1", "Artist1"), self._artist("a2", "Artist2")]
+        state = State()
+
+        def resolve_side_effect(spotify_id):
+            return "mb-" + spotify_id
+
+        mock_resolve.side_effect = resolve_side_effect
+
+        def in_window_side_effect(ctx, mbid, days):
+            if mbid == "mb-a1":
+                return [{"id": "rg1", "first-release-date": "2026-06-01"}]
+            return [{"id": "rg2", "first-release-date": "2026-03-01"}]
+
+        mock_in_window.side_effect = in_window_side_effect
+        result = _build_priority_order(MagicMock(), state, artists, 365)
+        self.assertEqual(result, ["a2", "a1"])
 
 
 if __name__ == "__main__":

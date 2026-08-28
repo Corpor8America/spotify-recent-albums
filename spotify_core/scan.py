@@ -16,12 +16,12 @@ from .api import (
 )
 from .artists import get_artist_albums, get_due_artists, get_followed_artists
 from .auth import get_access_token, load_refresh_token
-from .config import CHECK_INTERVAL_DAYS, DEFAULT_DAYS_LOOKBACK, get_version, load_config
+from .config import CHECK_INTERVAL_DAYS, DEFAULT_DAYS_LOOKBACK, get_version, load_config, save_config
 from .filters import is_auto_excluded, is_effectively_excluded, parse_release_date
 from .logging import clear_logs, log
 from .models import Album, Artist, MusicBrainzAlbum, ScanProgress
-from .musicbrainz import get_artist_active, get_albums_with_future_dates, resolve_spotify_to_mb
-from .playlists import add_tracks_to_playlist, get_album_track_uris, prune_playlist
+from .musicbrainz import get_artist_active, get_albums_in_window, get_albums_with_future_dates, resolve_spotify_to_mb
+from .playlists import add_tracks_to_playlist, get_album_track_uris, playlist_order_is_stale, prune_playlist, reorder_playlist
 from .state import clear_expired_rate_limits, load_state, save_state, update_state
 
 # Serializes scan runs so the scheduler and a manual "Run now" click can
@@ -130,14 +130,35 @@ def run_scan(ctx, days=None, interval_days=None, min_request_interval=None, mark
         _process_upcoming_releases(ctx, state)
 
         artists = _fetch_followed_artists(ctx, token, state, blocked_categories)
+        used_priority = False
+        any_new_albums = False
         if artists:
-            plan = _plan_artists(ctx, state, artists, interval_days, blocked_categories)
+            plan = _plan_artists(
+                ctx,
+                state,
+                artists,
+                interval_days,
+                blocked_categories,
+                days,
+                cfg.get("musicbrainz_priority_scan", False),
+            )
             if plan is not None:
-                _process_artists(ctx, token, state, plan, days, market, playlist_id,
-                                 blocked_categories)
+                due_artists, processed_ids, used_priority = plan
+                any_new_albums = _process_artists(
+                    ctx,
+                    token,
+                    state,
+                    (due_artists, processed_ids),
+                    days,
+                    market,
+                    playlist_id,
+                    blocked_categories,
+                )
 
         _finalize_progress(ctx, state, blocked_categories)
+        _maybe_auto_disable_priority_scan(ctx, cfg, used_priority, blocked_categories, state)
         _prune_safely(ctx, token, state, days, playlist_id, blocked_categories)
+        _maybe_auto_reorder(ctx, token, state, playlist_id, blocked_categories, any_new_albums)
 
         log("Scan finished." + (f" Blocked categories: {blocked_categories}" if blocked_categories else ""))
         return {"status": "ok", "blocked_categories": blocked_categories}
@@ -182,18 +203,63 @@ def _fetch_followed_artists(ctx, token, state, blocked_categories):
         return []
 
 
-def _plan_artists(ctx, state, artists, interval_days, blocked_categories):
+def _build_priority_order(ctx, state, artists, days_lookback):
+    """Query MusicBrainz for artists with a release in the lookback
+    window. Returns a list of artist_ids sorted by release date
+    (oldest first). Artists that don't resolve or have nothing in the
+    window are simply absent from the result -- callers must fall back
+    to normal selection for everyone else."""
+    candidates = []  # (release_date, artist_id)
+    for artist in artists:
+        artist_id = artist["id"]
+        entry = state.artists.get(artist_id)
+        mbid = entry.musicbrainz_id if entry else ""
+        if not mbid:
+            mbid = resolve_spotify_to_mb(artist_id)
+            if not mbid:
+                continue
+            if entry is None:
+                entry = Artist(id=artist_id, name=artist["name"])
+                state.artists[artist_id] = entry
+            entry.musicbrainz_id = mbid
+
+        try:
+            in_window = get_albums_in_window(ctx, mbid, days_lookback)
+        except Exception as e:
+            log(f"MB: priority lookup failed for {artist['name']}: {e}")
+            continue
+
+        for rg in in_window:
+            release_date = parse_release_date(rg.get("first-release-date", ""))
+            if release_date is not None:
+                candidates.append((release_date, artist_id))
+
+    candidates.sort(key=lambda c: c[0])
+    seen = set()
+    ordered_ids = []
+    for _, artist_id in candidates:
+        if artist_id not in seen:
+            seen.add(artist_id)
+            ordered_ids.append(artist_id)
+    return ordered_ids
+
+
+def _plan_artists(ctx, state, artists, interval_days, blocked_categories,
+                  days_lookback, use_priority=False):
     """Resume an interrupted scan or start a fresh batch. Returns
-    (due_artists, processed_ids) or None when the album phase is blocked."""
+    (due_artists, processed_ids, used_priority) or None when the album
+    phase is blocked."""
     ip = state.in_progress
     if ip is not None:
         processed_ids = set(ip.processed_ids)
         due_artists = [a for a in artists if a["id"] in ip.due_ids]
-        remaining = len(due_artists) - len(processed_ids)
+        remaining_artists = [a for a in due_artists if a["id"] not in processed_ids]
+        remaining = len(remaining_artists)
         log(f"Resuming: {remaining}/{len(due_artists)} remaining")
     else:
         due_artists = get_due_artists(artists, state, interval_days)
         processed_ids = set()
+        remaining_artists = due_artists
         remaining = len(due_artists)
         state.in_progress = ScanProgress(due_ids=[a["id"] for a in due_artists], processed_ids=[])
         save_state(ctx, state)
@@ -206,7 +272,24 @@ def _plan_artists(ctx, state, artists, interval_days, blocked_categories):
             f"{_fmt_ts(albums_blocked_until)}. "
             f"{remaining} artist(s) will be checked on the next scan.")
         return None
-    return due_artists, processed_ids
+
+    used_priority = False
+    if use_priority and remaining_artists:
+        priority_ids = _build_priority_order(ctx, state, remaining_artists, days_lookback)
+        priority_set = set(priority_ids)
+        by_id = {a["id"]: a for a in remaining_artists}
+        prioritized_remaining = (
+            [by_id[aid] for aid in priority_ids if aid in by_id]
+            + [a for a in remaining_artists if a["id"] not in priority_set]
+        )
+        processed_prefix = [a for a in due_artists if a["id"] in processed_ids]
+        due_artists = processed_prefix + prioritized_remaining
+        state.in_progress.due_ids = [a["id"] for a in due_artists]
+        save_state(ctx, state)
+        used_priority = True
+        log(f"MB: priority-ordered {len(remaining_artists)} pending artist(s).")
+
+    return due_artists, processed_ids, used_priority
 
 
 def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked_categories):
@@ -216,6 +299,7 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
     mb_refresh_days = cfg.get("musicbrainz_active_refresh_days", 30)
     cutoff = datetime.now() - timedelta(days=days)
     now_iso = datetime.now(timezone.utc).isoformat()
+    any_new_albums = False
     try:
         for i, artist in enumerate(due_artists, 1):
             if artist["id"] in processed_ids:
@@ -329,6 +413,7 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
                                            playlist_id, now_iso)
             if new_count:
                 log(f"    Added {new_count} new album(s)")
+                any_new_albums = True
             else:
                 log("    No new albums added")
             state.artists[artist["id"]] = Artist(
@@ -344,6 +429,7 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
     except RateLimitError as e:
         log(f"Stopping scan -- {e.category} rate-limited until {_fmt_ts(e.retry_until)}. Progress saved.")
         blocked_categories.append(e.category)
+    return any_new_albums
 
 
 def _record_new_albums(ctx, token, state, artist, albums, cutoff, playlist_id, now_iso):
@@ -392,3 +478,27 @@ def _prune_safely(ctx, token, state, days, playlist_id, blocked_categories):
     except RateLimitError as e:
         log(f"Skipping prune -- {e.category} rate-limited.")
         blocked_categories.append(e.category)
+
+
+def _maybe_auto_disable_priority_scan(ctx, cfg, used_priority, blocked_categories, state):
+    if not used_priority:
+        return
+    if blocked_categories or state.in_progress is not None:
+        return
+    if not cfg.get("musicbrainz_priority_scan", False):
+        return
+
+    cfg["musicbrainz_priority_scan"] = False
+    save_config(ctx, cfg)
+    log("MB priority scan completed cleanly; disabled MusicBrainz priority scan setting.")
+
+
+def _maybe_auto_reorder(ctx, token, state, playlist_id, blocked_categories, any_new_albums):
+    if not playlist_id or not any_new_albums or blocked_categories:
+        return
+    try:
+        if playlist_order_is_stale(ctx, token, state, playlist_id):
+            log("Playlist order drifted from release-date order -- reordering automatically.")
+            reorder_playlist(ctx, token, state, playlist_id)
+    except RateLimitError as e:
+        log(f"Skipping auto-reorder -- {e.category} rate-limited.")

@@ -319,7 +319,7 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
                 mbid = resolve_spotify_to_mb(artist["id"])
                 if mbid:
                     artist_entry.musicbrainz_id = mbid
-                    log(f"MB: resolved {artist['name']} → {mbid}")
+                    log(f"MB: resolved {artist['name']} -> {mbid}")
                 else:
                     log(f"MB: no MusicBrainz mapping for {artist['name']}, skipping MB features")
 
@@ -366,7 +366,7 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
                     log(f"MB: failed to fetch release groups for {artist['name']}: {e}")
 
             # Step 4: Skip logic
-            # If artist has any MusicBrainz upcoming album with a future release date → skip Spotify check
+            # If artist has any MusicBrainz upcoming album with a future release date, skip Spotify check.
             has_upcoming = any(
                 mb.artist_id == artist["id"] and mb.release_date > datetime.now().strftime("%Y-%m-%d")
                 for mb in state.musicbrainz_upcoming.values()
@@ -375,18 +375,18 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
                 if verbose:
                     log(f"  [{i}/{len(due_artists)}] {artist['name']} - skipping (upcoming MB release)")
                 else:
-                    log(f"  [{i}/{len(due_artists)}] {artist['name']} — skipped (upcoming MB release)")
+                    log(f"  [{i}/{len(due_artists)}] {artist['name']} - skipped (upcoming MB release)")
                 processed_ids.add(artist["id"])
                 state.in_progress.processed_ids = list(processed_ids)
                 save_state(ctx, state)
                 continue
 
-            # If inactive and no upcoming MB albums → skip
+            # If inactive and no upcoming MB albums, skip.
             if not artist_entry.mb_active and not has_upcoming:
                 if verbose:
                     log(f"  [{i}/{len(due_artists)}] {artist['name']} - skipping (inactive)")
                 else:
-                    log(f"  [{i}/{len(due_artists)}] {artist['name']} — skipped (inactive)")
+                    log(f"  [{i}/{len(due_artists)}] {artist['name']} - skipped (inactive)")
                 processed_ids.add(artist["id"])
                 state.in_progress.processed_ids = list(processed_ids)
                 save_state(ctx, state)
@@ -396,7 +396,7 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
             if verbose:
                 log(f"  [{i}/{len(due_artists)}] {artist['name']} - fetching albums...")
             else:
-                log(f"  [{i}/{len(due_artists)}] {artist['name']} — fetching albums...")
+                log(f"  [{i}/{len(due_artists)}] {artist['name']} - fetching albums...")
             try:
                 albums = get_artist_albums(ctx, token, artist["id"], state, market)
             except RateLimitError:

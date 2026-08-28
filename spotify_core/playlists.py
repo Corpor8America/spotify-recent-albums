@@ -154,24 +154,18 @@ def playlist_order_is_stale(ctx, token, state, playlist_id):
         parsed = parse_release_date(album.release_date)
         return parsed if parsed is not None else datetime.min
 
-    expected_order = [a.id for a in sorted(albums, key=sort_key)]
-
-    uri_to_album = {}
-    for a in albums:
-        for uri in a.track_uris or []:
-            uri_to_album[uri] = a.id
-
     current_uris = get_playlist_track_uris(ctx, token, playlist_id, state)
-    observed_order = []
-    seen = set()
-    for uri in current_uris:
-        album_id = uri_to_album.get(uri)
-        if album_id and album_id not in seen:
-            seen.add(album_id)
-            observed_order.append(album_id)
+    known_uris = {uri for album in albums for uri in (album.track_uris or [])}
+    observed_uris = [uri for uri in current_uris if uri in known_uris]
+    seen_uris = set(observed_uris)
 
-    expected_filtered = [a for a in expected_order if a in seen]
-    return observed_order != expected_filtered
+    expected_uris = []
+    for album in sorted(albums, key=sort_key):
+        album_uris = album.track_uris or []
+        if any(uri in seen_uris for uri in album_uris):
+            expected_uris.extend(album_uris)
+
+    return observed_uris != expected_uris
 
 
 def create_playlist(ctx, token, name, description=None):

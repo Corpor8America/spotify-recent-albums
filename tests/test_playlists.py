@@ -260,6 +260,28 @@ class PlaylistOrderIsStaleTests(ContextTestCase):
                 self.ctx, "token", state, "playlist")
         self.assertTrue(result)
 
+    def test_returns_true_when_tracks_within_album_swapped(self):
+        state = State(known_albums={
+            "a1": make_album("a1", "Album", "2026-01-01", added=True,
+                             track_uris=["a-1", "a-2"]),
+        })
+        with patch.object(core.playlists, "get_playlist_track_uris",
+                          return_value=["a-2", "a-1"]):
+            result = core.playlists.playlist_order_is_stale(
+                self.ctx, "token", state, "playlist")
+        self.assertTrue(result)
+
+    def test_returns_true_when_seen_album_is_missing_tracks(self):
+        state = State(known_albums={
+            "a1": make_album("a1", "Album", "2026-01-01", added=True,
+                             track_uris=["a-1", "a-2"]),
+        })
+        with patch.object(core.playlists, "get_playlist_track_uris",
+                          return_value=["a-1"]):
+            result = core.playlists.playlist_order_is_stale(
+                self.ctx, "token", state, "playlist")
+        self.assertTrue(result)
+
     def test_ignores_stray_uris(self):
         state = State(known_albums={
             "a1": make_album("a1", "Album", "2026-01-01", added=True,

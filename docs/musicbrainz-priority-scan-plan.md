@@ -149,10 +149,10 @@ pattern as `_process_artists` batches its saves.
 
 **File:** `spotify_core/scan.py`, `_plan_artists`
 
-Only engage the priority pass on a **fresh** scan (no `state.in_progress`
-resume in flight) and only for artists not already up to date — running
-an MB query across 117 artists on every single scan is wasteful once the
-backlog is cleared. Gate it behind either:
+Engage the priority pass only when the album-scan category is not already
+rate-limited, and only for artists that are actually still pending in the
+current scan plan. Running an MB query across 117 artists on every single
+scan is wasteful once the backlog is cleared. Gate it behind either:
 
 - A config flag (`musicbrainz_priority_scan: bool`, default `false`,
   settings-page toggle), explicitly opted into for a backlog catch-up, or
@@ -168,33 +168,158 @@ settings rather than heuristics (see `interval_days`, `days_lookback`
 being explicit knobs already). The threshold heuristic can be a follow-up
 if the manual flag proves annoying to toggle.
 
+Implementation requirements:
+
+- Change `_plan_artists` to accept `days_lookback` and `use_priority`.
+- Change `_plan_artists`'s successful return value from
+  `(due_artists, processed_ids)` to
+  `(due_artists, processed_ids, used_priority)`.
+- `used_priority` must be `True` only when `_build_priority_order` was
+  actually called. Do not set it just because the config flag is enabled.
+- Check `blocked_until(state, ARTIST_ALBUMS_CATEGORY)` before doing any
+  MusicBrainz priority work. If Spotify album scanning is already
+  blocked, return `None` exactly as today and leave the setting enabled.
+- On a fresh scan, build and persist `state.in_progress` before priority
+  ordering so the reordered `due_ids` can be saved in the same field used
+  by resume.
+- On a resume, never remove or reprocess artists already listed in
+  `state.in_progress.processed_ids`; only reorder the remaining artists.
+
+Use this shape:
+
 ```python
-def _plan_artists(ctx, state, artists, interval_days, blocked_categories, days_lookback, use_priority):
+def _plan_artists(ctx, state, artists, interval_days, blocked_categories,
+                  days_lookback, use_priority):
     ip = state.in_progress
     if ip is not None:
-        # unchanged: resume logic takes precedence, no priority pass on resume
-        ...
+        processed_ids = set(ip.processed_ids)
+        due_artists = [a for a in artists if a["id"] in ip.due_ids]
+        remaining_artists = [a for a in due_artists if a["id"] not in processed_ids]
+        remaining = len(remaining_artists)
+        log(f"Resuming: {remaining}/{len(due_artists)} remaining")
     else:
         due_artists = get_due_artists(artists, state, interval_days)
-        if use_priority and due_artists:
-            priority_ids = _build_priority_order(ctx, state, due_artists, days_lookback)
-            priority_set = set(priority_ids)
-            # priority-ordered artists first, then the rest in their
-            # existing due_artists order
-            by_id = {a["id"]: a for a in due_artists}
-            due_artists = (
-                [by_id[aid] for aid in priority_ids if aid in by_id]
-                + [a for a in due_artists if a["id"] not in priority_set]
-            )
-        ...
+        processed_ids = set()
+        remaining_artists = due_artists
+        remaining = len(due_artists)
+        state.in_progress = ScanProgress(
+            due_ids=[a["id"] for a in due_artists],
+            processed_ids=[],
+        )
+        save_state(ctx, state)
+        log(f"{len(due_artists)}/{len(artists)} artists due for a check "
+            f"(interval: {interval_days}d)")
+
+    albums_blocked_until = blocked_until(state, ARTIST_ALBUMS_CATEGORY)
+    if albums_blocked_until is not None:
+        blocked_categories.append(ARTIST_ALBUMS_CATEGORY)
+        log(f"Skipping album scan -- {ARTIST_ALBUMS_CATEGORY} rate-limited until "
+            f"{_fmt_ts(albums_blocked_until)}. "
+            f"{remaining} artist(s) will be checked on the next scan.")
+        return None
+
+    used_priority = False
+    if use_priority and remaining_artists:
+        priority_ids = _build_priority_order(ctx, state, remaining_artists, days_lookback)
+        priority_set = set(priority_ids)
+        # priority-ordered remaining artists first, then the rest in
+        # their existing resume/fresh-plan order. Already-processed
+        # artists stay recorded in processed_ids and are not rechecked.
+        by_id = {a["id"]: a for a in remaining_artists}
+        prioritized_remaining = (
+            [by_id[aid] for aid in priority_ids if aid in by_id]
+            + [a for a in remaining_artists if a["id"] not in priority_set]
+        )
+        processed_prefix = [a for a in due_artists if a["id"] in processed_ids]
+        due_artists = processed_prefix + prioritized_remaining
+        state.in_progress.due_ids = [a["id"] for a in due_artists]
+        save_state(ctx, state)
+        used_priority = True
+        log(f"MB: priority-ordered {len(remaining_artists)} pending artist(s).")
+
+    return due_artists, processed_ids, used_priority
 ```
 
 `run_scan` passes `cfg.get("musicbrainz_priority_scan", False)` down to
 `_plan_artists` alongside the existing `days`/`interval_days` params.
+It must also unpack the new third return value and pass it to the
+auto-disable helper:
 
-This preserves every existing code path for `ip is not None` (resume) and
-for `use_priority=False` (default) — zero behavior change unless someone
-opts in.
+```python
+used_priority = False
+...
+if artists:
+    plan = _plan_artists(
+        ctx,
+        state,
+        artists,
+        interval_days,
+        blocked_categories,
+        days,
+        cfg.get("musicbrainz_priority_scan", False),
+    )
+    if plan is not None:
+        due_artists, processed_ids, used_priority = plan
+        _process_artists(
+            ctx,
+            token,
+            state,
+            (due_artists, processed_ids),
+            days,
+            market,
+            playlist_id,
+            blocked_categories,
+        )
+
+_finalize_progress(ctx, state, blocked_categories)
+_maybe_auto_disable_priority_scan(ctx, cfg, used_priority, blocked_categories, state)
+_prune_safely(ctx, token, state, days, playlist_id, blocked_categories)
+```
+
+This preserves every existing code path for `use_priority=False`
+(default) — zero behavior change unless someone opts in. Resume behavior
+does change when the setting is enabled: if a backlog is already in
+`state.in_progress` because an earlier scan hit Spotify rate limits, the
+priority pass reorders only the remaining, unprocessed artists. That lets
+the setting help after the user turns it on mid-backlog instead of waiting
+for the old unprioritized resume list to finish first.
+
+After a priority-enabled scan completes the full planned artist list
+without leaving `state.in_progress` set and without any
+`blocked_categories`, automatically persist
+`musicbrainz_priority_scan = false` back to the app config. This keeps the
+priority pass as a one-time backlog catch-up tool instead of a permanent
+two-minute MusicBrainz preflight someone has to remember to turn off.
+
+Do **not** auto-disable when a scan is interrupted by Spotify rate limits,
+crashes before cleanup, or exits with `state.in_progress` still populated.
+Those cases mean the catch-up pass has not really finished yet. Also do
+not auto-disable merely because `_build_priority_order` found zero MB
+hits — the setting's job is to accelerate the whole backlog pass, and an
+artist with no MB match still needs the normal Spotify scan to complete
+before the backlog can be considered cleared.
+
+```python
+def _maybe_auto_disable_priority_scan(ctx, cfg, used_priority, blocked_categories, state):
+    if not used_priority:
+        return
+    if blocked_categories or state.in_progress is not None:
+        return
+    if not cfg.get("musicbrainz_priority_scan", False):
+        return
+
+    cfg["musicbrainz_priority_scan"] = False
+    save_config(ctx, cfg)
+    log("MB priority scan completed cleanly; disabled MusicBrainz priority scan setting.")
+```
+
+Add `save_config` to the existing config import in `spotify_core/scan.py`.
+Call `_maybe_auto_disable_priority_scan` near the end of `run_scan`, after
+`_finalize_progress` has had a chance to clear `state.in_progress`, but
+before returning the final scan result. Keep `_prune_safely` after the
+auto-disable call so a prune-side rate limit does not prevent disabling a
+successfully completed priority catch-up. The priority pass only reorders
+the album-scan work; pruning is a separate cleanup phase.
 
 ---
 
@@ -329,6 +454,11 @@ Plus a settings-page checkbox (`templates/settings.html`, same pattern as
 the existing `verbose_logging` checkbox) and form parsing in
 `app.py`'s `settings()` POST handler.
 
+Because the setting auto-disables after a clean catch-up run, its helper
+text should make that behavior explicit. For example: "Prioritize artists
+with recent MusicBrainz releases during the next full catch-up scan; this
+turns itself off after the scan completes."
+
 ---
 
 ## 6. Rate-limit / error handling
@@ -355,6 +485,35 @@ Following the existing patterns in `tests/test_musicbrainz.py` (unit,
 mocked `requests.get`), `tests/test_musicbrainz_scan.py` (scan-pipeline
 integration with mocked MB functions), and `tests/test_scan.py`.
 
+### Implementation checklist
+
+Do the implementation in this order:
+
+1. Add `get_albums_in_window` to `spotify_core/musicbrainz.py` and export
+   it from `spotify_core/__init__.py` if the package-level bindings need
+   it for tests.
+2. Import `get_albums_in_window` into `spotify_core/scan.py` and add
+   `_build_priority_order`.
+3. Import `save_config` into `spotify_core/scan.py`.
+4. Update `_plan_artists` exactly as described in section 3:
+   new params, new three-value return, Spotify blocked check before MB
+   priority work, fresh-scan `state.in_progress` creation before priority
+   ordering, resume-only reordering of unprocessed artists.
+5. Update `run_scan` to initialize `used_priority = False`, pass the
+   priority config into `_plan_artists`, unpack the three-value plan, and
+   still pass only `(due_artists, processed_ids)` into `_process_artists`.
+6. Add `_maybe_auto_disable_priority_scan` and call it immediately after
+   `_finalize_progress`.
+7. Add the config default, settings checkbox, settings POST parsing, and
+   helper text.
+8. Add tests before changing the implementation where practical, then run
+   the focused test modules listed below.
+
+Keep the auto-disable logic intentionally boring. Do not add thresholds,
+percentages, counters, or "zero MB hits" heuristics. The only trigger is:
+the priority pass actually ran, the scan is no longer blocked, and
+`state.in_progress` has been cleared.
+
 **`tests/test_musicbrainz.py` additions — `get_albums_in_window`:**
 - Returns only release-groups within `[now - days_lookback, now]`.
 - Excludes future dates and dates older than the window.
@@ -373,20 +532,52 @@ integration with mocked MB functions), and `tests/test_scan.py`.
 **`tests/test_scan.py` additions — `_plan_artists` wiring:**
 - `use_priority=False` (default): `due_artists` order is unchanged from
   today's `get_due_artists` output — regression guard.
+- Successful `_plan_artists` calls return three values:
+  `(due_artists, processed_ids, used_priority)`.
 - `use_priority=True` with priority hits: priority artists appear first,
   in release-date order; remaining due artists follow in their original
   order.
-- `use_priority=True` but `state.in_progress` is set (resume in flight):
-  priority pass is skipped entirely, resume logic behaves exactly as
-  today (regression guard — this is the trickiest interaction to get
-  wrong).
+- `use_priority=True` with `state.in_progress` set (resume in flight):
+  already-processed artists are not rechecked, but the remaining artists
+  are priority-ordered and persisted back to `state.in_progress.due_ids`.
 - `use_priority=True` with zero MB hits: falls through to identical
-  behavior as `use_priority=False`.
+  artist ordering as `use_priority=False`, but `used_priority=True`
+  because `_build_priority_order` did run.
+- `use_priority=True` while `ARTIST_ALBUMS_CATEGORY` is already blocked:
+  priority pass is skipped so the app does not spend MB calls before
+  Spotify album scanning can resume, `_plan_artists` returns `None`, and
+  `musicbrainz_priority_scan` remains enabled.
+
+**`tests/test_scan.py` additions — `run_scan` wiring:**
+- `run_scan` passes `days` as `days_lookback` into `_plan_artists`.
+- `run_scan` passes `cfg["musicbrainz_priority_scan"]` into
+  `_plan_artists`, defaulting to `False`.
+- `_process_artists` still receives a two-item plan
+  `(due_artists, processed_ids)`; do not make `_process_artists`
+  understand `used_priority`.
+- `_maybe_auto_disable_priority_scan` is called after
+  `_finalize_progress`.
+
+**`tests/test_scan.py` additions — auto-disable priority setting:**
+- Fresh priority-enabled scan completes with no `blocked_categories` and
+  no remaining `state.in_progress` -> config is written with
+  `musicbrainz_priority_scan=False`.
+- Priority-enabled scan is interrupted by a rate limit /
+  `blocked_categories` -> setting remains enabled.
+- Resume scan with `state.in_progress` already set and priority pass
+  actually applied to remaining artists -> setting auto-disables after
+  the resumed backlog completes cleanly.
+- Resume scan with `state.in_progress` already set but album scanning is
+  still rate-limited -> priority pass is skipped and setting remains
+  enabled.
+- Priority setting is already `False` -> no config write.
 
 **`tests/test_config.py` / `tests/test_app_routes.py` additions:**
 - `musicbrainz_priority_scan` defaults to `False`.
 - Settings POST round-trips the checkbox value, same as the existing
   `verbose_logging` test.
+- Settings page helper text mentions that the priority pass turns itself
+  off after a clean catch-up scan.
 
 No new integration/mock-server tests should be strictly necessary —
 `MockMusicBrainzServer` (`tests/mock_musicbrainz_server.py`) already
@@ -394,6 +585,12 @@ supports configurable per-artist release-groups and can back an
 end-to-end test of a full `run_scan` with priority ordering enabled if
 desired, but the unit-level coverage above should be sufficient to trust
 the logic.
+
+Focused verification command:
+
+```powershell
+python -m unittest tests.test_musicbrainz tests.test_musicbrainz_scan tests.test_scan tests.test_config tests.test_app_routes
+```
 
 **`tests/test_playlists.py` additions — `playlist_order_is_stale`:**
 - Returns `False` when the current playlist order already matches
@@ -430,19 +627,24 @@ Resolved from the open questions raised during design review:
    (`musicbrainz_priority_scan`) for v1. Revisit a heuristic
    (auto-engage above some due-artist percentage) later only if the
    manual flag proves annoying to toggle after a backlog clears.
-2. **Cost of the priority pass if left permanently enabled:** accepted as
-   a documentation problem, not a code problem — settings helper text
-   should say this is meant for backlog catch-up, and the README should
-   note it's worth disabling once the backlog clears. No auto-disable
-   logic.
+2. **Cost of the priority pass if left permanently enabled:** handle in
+   code with narrow auto-disable logic. The setting remains explicit and
+   opt-in, but after a priority-enabled scan completes cleanly
+   (no `blocked_categories`, no remaining `state.in_progress`), `run_scan`
+   writes `musicbrainz_priority_scan=false` back to config and logs it.
+   Interrupted scans do not auto-disable the setting. Resume slices can
+   auto-disable it only if the priority pass actually ran against the
+   remaining artists and the resumed backlog then completed cleanly.
 3. **MB/Spotify date-precision mismatches at the window boundary:**
    accepted as harmless — MB's window only affects ordering, never
    inclusion/exclusion, since Spotify's own date check in
    `_record_new_albums` remains the sole gate on what's recorded.
-4. **Interrupted priority-ordered scans resuming across a multi-day
-   lockout:** accepted as an edge case the automatic reorder (section 4)
-   now cleans up after the fact, rather than something the scan itself
-   needs to prevent.
+4. **Interrupted or pre-existing unprioritized scans resuming across a
+   multi-day lockout:** handle this directly in `_plan_artists`. If the
+   priority setting is enabled on a resume and Spotify album scanning is
+   no longer blocked, priority-order only the remaining unprocessed
+   artists and persist the updated `state.in_progress.due_ids`. Automatic
+   reorder (section 4) still cleans up playlist drift after the fact.
 5. **`_build_priority_order` persisting `mb_active` while it's already
    calling MB:** rejected as scope-creep — active-status checking stays
    exactly where it is today, in `_process_artists`.

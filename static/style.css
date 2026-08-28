@@ -386,8 +386,6 @@ tr:hover td {
 
 /* Activity Log Feed */
 .log-feed {
-  max-height: 400px;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -477,23 +475,62 @@ tr:hover td {
   color: var(--md-sys-color-error);
 }
 
-/* Log feed scrollbar */
-.log-feed::-webkit-scrollbar {
-  width: 8px;
+/* Collapsible Card Panels */
+.collapsible {
+  padding: 0;
 }
 
-.log-feed::-webkit-scrollbar-track {
-  background: var(--md-sys-color-surface-container-low);
-  border-radius: 4px;
+.collapsible .card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface);
+  padding: 1.25rem 1.5rem;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--md-transition-duration) var(--md-transition-timing),
+    background-color var(--md-transition-duration) var(--md-transition-timing);
+  border-radius: 16px;
 }
 
-.log-feed::-webkit-scrollbar-thumb {
-  background: var(--md-sys-color-surface-container-highest);
-  border-radius: 4px;
+.collapsible .card-header::-webkit-details-marker {
+  display: none;
 }
 
-.log-feed::-webkit-scrollbar-thumb:hover {
-  background: var(--md-sys-color-primary);
+.collapsible .card-header::marker {
+  display: none;
+  content: "";
+}
+
+.collapsible .card-header:hover {
+  background-color: var(--md-sys-color-surface-container-high);
+}
+
+.collapsible[open] .card-header {
+  border-bottom: 1px solid var(--md-sys-color-surface-variant);
+  border-radius: 16px 16px 0 0;
+}
+
+.collapsible .card-header .material-symbols-outlined:first-child {
+  color: var(--md-sys-color-primary);
+}
+
+.collapse-icon {
+  margin-left: auto;
+  transition: transform var(--md-transition-duration) var(--md-transition-timing);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.collapsible[open] .collapse-icon {
+  transform: rotate(180deg);
+}
+
+.collapsible .card-body {
+  padding: 1.5rem;
 }
 
 /* Shared scrollbar styles for tables */

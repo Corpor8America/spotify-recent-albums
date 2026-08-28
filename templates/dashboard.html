@@ -73,90 +73,147 @@
   {% endif %}
 </div>
 
-<div class="card">
-  <h2><span class="material-symbols-outlined">album</span> Recent releases ({{ report_albums|length }})</h2>
-  <div class="table-container">
-    <table class="releases-table">
-      <thead>
-        <tr><th>Artist</th><th>Album</th><th>Released</th><th>Playlist</th><th></th></tr>
-      </thead>
-      <tbody>
-        {% for a in report_albums %}
-        <tr>
-          <td>{{ a.artist }}</td>
-          <td><a href="{{ a.url }}" target="_blank" style="font-weight: 500;">{{ a.name }}</a></td>
-          <td>{{ a.release_date }}</td>
-          <td>
-            {% if a.id.startswith('mb_') %}
-              <span class="badge warn" style="padding: 0.15rem 0.5rem; font-size: 0.7rem; border-radius: 6px;">upcoming</span>
-            {% elif a.added_to_playlist %}
-              <span class="badge ok" style="padding: 0.15rem 0.5rem; font-size: 0.7rem; border-radius: 6px;">added</span>
-            {% else %}
-              <span class="muted">-</span>
-            {% endif %}
-          </td>
-          <td>
-            {% if not a.id.startswith('mb_') %}
-            <form method="post" action="{{ url_for('set_override', album_id=a.id) }}" style="display:inline">
-              <input type="hidden" name="value" value="true">
-              <button class="btn small secondary" type="submit">
-                <span class="material-symbols-outlined" style="font-size: 14px;">block</span> Exclude
-              </button>
-            </form>
-            {% endif %}
-          </td>
-        </tr>
-        {% else %}
-        <tr><td colspan="5" class="muted" style="text-align: center;">Nothing yet -- run a scan to populate this.</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
+<details class="card collapsible" open>
+  <summary class="card-header">
+    <span class="material-symbols-outlined">album</span> Recent releases ({{ report_albums|length }})
+    <span class="collapse-icon material-symbols-outlined">expand_more</span>
+  </summary>
+  <div class="card-body">
+    <div class="table-container">
+      <table class="releases-table">
+        <thead>
+          <tr><th>Artist</th><th>Album</th><th>Released</th><th>Playlist</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for a in report_albums %}
+          <tr>
+            <td>{{ a.artist }}</td>
+            <td><a href="{{ a.url }}" target="_blank" style="font-weight: 500;">{{ a.name }}</a></td>
+            <td>{{ a.release_date }}</td>
+            <td>
+              {% if a.id.startswith('mb_') %}
+                <span class="badge warn" style="padding: 0.15rem 0.5rem; font-size: 0.7rem; border-radius: 6px;">upcoming</span>
+              {% elif a.added_to_playlist %}
+                <span class="badge ok" style="padding: 0.15rem 0.5rem; font-size: 0.7rem; border-radius: 6px;">added</span>
+              {% else %}
+                <span class="muted">-</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if not a.id.startswith('mb_') %}
+              <form method="post" action="{{ url_for('set_override', album_id=a.id) }}" style="display:inline">
+                <input type="hidden" name="value" value="true">
+                <button class="btn small secondary" type="submit">
+                  <span class="material-symbols-outlined" style="font-size: 14px;">block</span> Exclude
+                </button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="muted" style="text-align: center;">Nothing yet -- run a scan to populate this.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
-</div>
+</details>
 
-<div class="card">
-  <h2><span class="material-symbols-outlined">block</span> Excluded albums ({{ excluded_albums|length }})</h2>
-  <p class="muted" style="margin-bottom: 1.25rem;">Live/remaster/deluxe editions matched by the trailing parenthetical/bracket filter, plus anything you've manually excluded. Flip an override to bring one back.</p>
-  <div class="table-container">
-    <table class="excluded-table">
-      <thead>
-        <tr><th>Artist</th><th>Album</th><th>Reason</th><th></th></tr>
-      </thead>
-      <tbody>
-        {% for a in excluded_albums %}
-        <tr>
-          <td>{{ a.artist }}</td>
-          <td><a href="{{ a.url }}" target="_blank" style="font-weight: 500;">{{ a.name }}</a></td>
-          <td class="muted">{% if a.manual_override %}manual{% else %}auto (parenthetical){% endif %}</td>
-          <td>
-            <form method="post" action="{{ url_for('set_override', album_id=a.id) }}" style="display:inline">
-              <input type="hidden" name="value" value="false">
-              <button class="btn small" type="submit">
-                <span class="material-symbols-outlined" style="font-size: 14px;">add</span> Include
-              </button>
-            </form>
-          </td>
-        </tr>
-        {% else %}
-        <tr><td colspan="4" class="muted" style="text-align: center;">None.</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
+<details class="card collapsible">
+  <summary class="card-header">
+    <span class="material-symbols-outlined">block</span> Excluded albums ({{ excluded_albums|length }})
+    <span class="collapse-icon material-symbols-outlined">expand_more</span>
+  </summary>
+  <div class="card-body">
+    <p class="muted" style="margin-bottom: 1.25rem;">Live/remaster/deluxe editions matched by the trailing parenthetical/bracket filter, plus anything you've manually excluded. Flip an override to bring one back.</p>
+    <div class="table-container">
+      <table class="excluded-table">
+        <thead>
+          <tr><th>Artist</th><th>Album</th><th>Reason</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for a in excluded_albums %}
+          <tr>
+            <td>{{ a.artist }}</td>
+            <td><a href="{{ a.url }}" target="_blank" style="font-weight: 500;">{{ a.name }}</a></td>
+            <td class="muted">{% if a.manual_override %}manual{% else %}auto (parenthetical){% endif %}</td>
+            <td>
+              <form method="post" action="{{ url_for('set_override', album_id=a.id) }}" style="display:inline">
+                <input type="hidden" name="value" value="false">
+                <button class="btn small" type="submit">
+                  <span class="material-symbols-outlined" style="font-size: 14px;">add</span> Include
+                </button>
+              </form>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="muted" style="text-align: center;">None.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
-</div>
+</details>
 
-<div class="card">
-  <h2><span class="material-symbols-outlined">terminal</span> Recent activity</h2>
-  <pre class="log">{% for line in logs %}{{ line }}
-{% endfor %}</pre>
-</div>
+<details class="card collapsible" open>
+  <summary class="card-header">
+    <span class="material-symbols-outlined">history</span> Recent activity
+    <span class="collapse-icon material-symbols-outlined">expand_more</span>
+  </summary>
+  <div class="card-body">
+    <div class="log-feed" id="log-feed">
+      {% for line in logs %}
+      <div class="log-entry" data-raw="{{ line|e }}">
+        <div class="log-entry-content">
+          <span class="log-message">{{ line }}</span>
+        </div>
+      </div>
+      {% else %}
+      <div class="log-empty">No activity yet -- run a scan to see logs here.</div>
+      {% endfor %}
+    </div>
+  </div>
+</details>
 
 <p class="footer-text">version {{ version }}</p>
 {% endblock %}
 
 {% block scripts %}
 <script>
-  var logBox = document.querySelector('.log');
-  if (logBox) logBox.scrollTop = logBox.scrollHeight;
+  (function() {
+    var feed = document.getElementById('log-feed');
+    if (!feed) return;
+
+    var entries = feed.querySelectorAll('.log-entry');
+    entries.forEach(function(entry) {
+      var raw = entry.getAttribute('data-raw') || '';
+      var match = raw.match(/^(\d{2}:\d{2}:\d{2})\s+(.*)/);
+      var timestamp = match ? match[1] : '';
+      var message = match ? match[2] : raw;
+
+      var type = 'info';
+      var lower = message.toLowerCase();
+      if (/error|fail|exception|rate.limit|denied/.test(lower)) {
+        type = 'error';
+      } else if (/warn|warning/.test(lower)) {
+        type = 'warn';
+      } else if (/success|added|connected|completed|saved|done|created/.test(lower)) {
+        type = 'success';
+      }
+
+      var iconMap = {
+        info: 'info',
+        success: 'check_circle',
+        warn: 'warning',
+        error: 'error'
+      };
+
+      entry.classList.add('log-' + type);
+      entry.innerHTML =
+        '<span class="log-timestamp">' + timestamp + '</span>' +
+        '<span class="log-icon material-symbols-outlined">' + (iconMap[type] || 'info') + '</span>' +
+        '<span class="log-message">' + message + '</span>';
+    });
+  })();
 </script>
 {% endblock %}

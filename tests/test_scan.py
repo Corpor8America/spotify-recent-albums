@@ -7,12 +7,17 @@ from unittest.mock import patch, MagicMock
 import spotify_core as core
 from spotify_core.api import ARTIST_ALBUMS_CATEGORY
 from spotify_core.models import Album, Artist, ScanProgress, State
-from spotify_core.scan import get_due_artists, record_album, _plan_artists, _build_priority_order, _maybe_auto_disable_priority_scan, _maybe_auto_reorder, _should_use_priority_scan, AUTO_PRIORITY_MIN_DUE_ARTISTS, AUTO_PRIORITY_MIN_DUE_RATIO
+from spotify_core.scan import get_due_artists, record_album, _plan_artists, _mb_classify_and_order, _active_check_is_fresh, _maybe_auto_reorder
 from tests.support import ContextTestCase
 
 
 def artist_payload(artist_id, name):
     return {"id": artist_id, "name": name}
+
+
+def _classify_passthrough(ctx, state, artists, days_lookback, total_count, interval_days):
+    """Classifier fake that keeps every artist in their original order."""
+    return [a["id"] for a in artists], set()
 
 
 def album_payload(album_id, name, release_date, artist_id="art1", total_tracks=10):
@@ -54,51 +59,6 @@ class GetDueArtistsTests(unittest.TestCase):
         })
         due = get_due_artists(artists, state, 3)
         self.assertEqual([a["id"] for a in due], ["a2"])
-
-
-class ShouldUsePriorityScanTests(unittest.TestCase):
-    """Tests for _should_use_priority_scan heuristic."""
-
-    def test_config_flag_overrides_thresholds(self):
-        """Explicit config flag forces priority regardless of batch size."""
-        cfg = {"musicbrainz_priority_scan": True}
-        self.assertTrue(_should_use_priority_scan(cfg, 1, 100))
-
-    def test_config_flag_false_does_not_override(self):
-        cfg = {"musicbrainz_priority_scan": False}
-        self.assertFalse(_should_use_priority_scan(cfg, 1, 100))
-
-    def test_returns_false_when_total_zero(self):
-        cfg = {}
-        self.assertFalse(_should_use_priority_scan(cfg, 0, 0))
-
-    def test_returns_false_when_total_negative(self):
-        cfg = {}
-        self.assertFalse(_should_use_priority_scan(cfg, 5, -1))
-
-    def test_below_min_due_count(self):
-        cfg = {}
-        self.assertFalse(_should_use_priority_scan(cfg, AUTO_PRIORITY_MIN_DUE_ARTISTS - 1, 100))
-
-    def test_at_min_due_count_but_low_ratio(self):
-        cfg = {}
-        # 20 out of 200 = 10%, below 20% ratio
-        self.assertFalse(_should_use_priority_scan(cfg, AUTO_PRIORITY_MIN_DUE_ARTISTS, 200))
-
-    def test_above_min_due_count_and_ratio(self):
-        cfg = {}
-        # 25 out of 100 = 25%, above both thresholds
-        self.assertTrue(_should_use_priority_scan(cfg, 25, 100))
-
-    def test_exact_ratio_threshold(self):
-        cfg = {}
-        # 20 out of 100 = 20%, exactly at ratio
-        self.assertTrue(_should_use_priority_scan(cfg, AUTO_PRIORITY_MIN_DUE_ARTISTS, 100))
-
-    def test_high_ratio_but_low_absolute_count(self):
-        cfg = {}
-        # 100% of 5 artists = ratio met, but only 5 due (< 20 min)
-        self.assertFalse(_should_use_priority_scan(cfg, 5, 5))
 
 
 class RecordAlbumTests(unittest.TestCase):
@@ -217,7 +177,8 @@ class RunScanBlockedCategoryTests(ContextTestCase):
         self.assertIn(ARTIST_ALBUMS_CATEGORY, state.rate_limits)
         self.assertEqual(len(state.in_progress.processed_ids), 5)
 
-    def test_runs_album_phase_when_not_blocked(self):
+    @patch("spotify_core.scan._mb_classify_and_order", side_effect=_classify_passthrough)
+    def test_runs_album_phase_when_not_blocked(self, mock_classify):
         artists = [artist_payload(f"a{i}", f"Artist {i}") for i in range(2)]
         with patch.object(core.scan, "get_access_token", return_value="tok"), \
              patch.object(core.scan, "get_followed_artists", return_value=artists), \
@@ -238,7 +199,8 @@ class RunScanResumeTests(ContextTestCase):
         super().setUp()
         self.write_token("test-token")
 
-    def test_resume_only_processes_remaining_artists(self):
+    @patch("spotify_core.scan._mb_classify_and_order", side_effect=_classify_passthrough)
+    def test_resume_only_processes_remaining_artists(self, mock_classify):
         artists = [artist_payload("a1", "A"), artist_payload("a2", "B"),
                    artist_payload("a3", "C")]
         core.save_state(State(in_progress=ScanProgress(
@@ -254,7 +216,8 @@ class RunScanResumeTests(ContextTestCase):
         self.assertIsNone(state.in_progress)
         self.assertEqual(set(state.artists.keys()), {"a2", "a3"})
 
-    def test_unreleased_album_not_added_to_playlist(self):
+    @patch("spotify_core.scan._mb_classify_and_order", side_effect=_classify_passthrough)
+    def test_unreleased_album_not_added_to_playlist(self, mock_classify):
         future = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
         artists = [artist_payload("art1", "Artist")]
         with patch.object(core.scan, "get_access_token", return_value="tok"), \
@@ -274,7 +237,8 @@ class RunScanResumeTests(ContextTestCase):
         self.assertFalse(entry.added_to_playlist)
         self.assertEqual(entry.track_uris, [])
 
-    def test_recent_album_added_to_playlist(self):
+    @patch("spotify_core.scan._mb_classify_and_order", side_effect=_classify_passthrough)
+    def test_recent_album_added_to_playlist(self, mock_classify):
         recent = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
         artists = [artist_payload("art1", "Artist")]
         with patch.object(core.scan, "get_access_token", return_value="tok"), \
@@ -314,7 +278,7 @@ class RunScanNotConnectedTests(ContextTestCase):
 
 
 class PlanArtistsTests(ContextTestCase):
-    """Tests for _plan_artists wiring with priority support."""
+    """Tests for _plan_artists wiring around the MB classifier."""
 
     def setUp(self):
         super().setUp()
@@ -324,170 +288,306 @@ class PlanArtistsTests(ContextTestCase):
         return [artist_payload("a1", "A"), artist_payload("a2", "B"),
                 artist_payload("a3", "C")]
 
-    def test_use_priority_false_returns_three_values(self):
+    @patch("spotify_core.scan._mb_classify_and_order",
+           return_value=(["a1", "a2", "a3"], set()))
+    def test_returns_three_values(self, mock_classify):
         artists = self._artists()
-        result = _plan_artists(self.ctx, State(), artists, 7, [], 365, cfg={})
+        result = _plan_artists(self.ctx, State(), artists, 7, [], 365)
         self.assertIsNotNone(result)
         self.assertEqual(len(result), 3)
-        due, processed, used_priority = result
-        self.assertFalse(used_priority)
 
-    def test_use_priority_false_order_unchanged(self):
+    @patch("spotify_core.scan._mb_classify_and_order",
+           return_value=(["a1", "a2", "a3"], set()))
+    def test_order_unchanged_when_no_hits(self, mock_classify):
         artists = self._artists()
         state = State()
-        due, _, _ = _plan_artists(self.ctx, state, artists, 7, [], 365, cfg={})
+        due, _, _ = _plan_artists(self.ctx, state, artists, 7, [], 365)
         due_ids = [a["id"] for a in due]
-        # Should be same as get_due_artists output
         expected = [a["id"] for a in get_due_artists(artists, state, 7)]
         self.assertEqual(due_ids, expected)
+        mock_classify.assert_called_once()
 
-    @patch("spotify_core.scan._build_priority_order", return_value=["a2", "a1"])
-    def test_use_priority_true_reorders(self, mock_build):
+    @patch("spotify_core.scan._mb_classify_and_order",
+           return_value=(["a2", "a1", "a3"], set()))
+    def test_hits_reorder(self, mock_classify):
         artists = self._artists()
-        due, _, used_priority = _plan_artists(
-            self.ctx, State(), artists, 7, [], 365, cfg={"musicbrainz_priority_scan": True})
-        self.assertTrue(used_priority)
+        due, _, _ = _plan_artists(self.ctx, State(), artists, 7, [], 365)
         due_ids = [a["id"] for a in due]
         self.assertEqual(due_ids[0], "a2")
         self.assertEqual(due_ids[1], "a1")
+        self.assertEqual(due_ids[2], "a3")
 
-    @patch("spotify_core.scan._build_priority_order", return_value=[])
-    def test_use_priority_true_zero_hits_same_order(self, mock_build):
-        artists = self._artists()
-        state = State()
-        due_default, _, _ = _plan_artists(self.ctx, State(), artists, 7, [], 365, cfg={})
-        due_priority, _, used_priority = _plan_artists(self.ctx, state, artists, 7, [], 365, cfg={"musicbrainz_priority_scan": True})
-        self.assertTrue(used_priority)
-        # Zero MB hits -> same order as get_due_artists
-        self.assertEqual([a["id"] for a in due_priority], [a["id"] for a in due_default])
-
-    def test_blocked_category_returns_none(self):
+    @patch("spotify_core.scan._mb_classify_and_order")
+    def test_blocked_category_returns_none(self, mock_classify):
         artists = self._artists()
         state = State(rate_limits={ARTIST_ALBUMS_CATEGORY: int(time.time()) + 3600})
-        result = _plan_artists(self.ctx, state, artists, 7, [], 365, cfg={"musicbrainz_priority_scan": True})
+        result = _plan_artists(self.ctx, state, artists, 7, [], 365)
         self.assertIsNone(result)
+        mock_classify.assert_not_called()
 
-    def test_resume_preserves_processed_ids(self):
+    @patch("spotify_core.scan._mb_classify_and_order",
+           return_value=(["a2", "a3"], set()))
+    def test_resume_preserves_processed_ids(self, mock_classify):
         artists = self._artists()
         state = State(in_progress=ScanProgress(
             due_ids=["a1", "a2", "a3"], processed_ids=["a1"]))
-        result = _plan_artists(self.ctx, state, artists, 7, [], 365, cfg={})
+        result = _plan_artists(self.ctx, state, artists, 7, [], 365)
         self.assertIsNotNone(result)
         due, processed, _ = result
         self.assertIn("a1", processed)
+        # a1 was already processed and stays first
+        due_ids = [a["id"] for a in due]
+        self.assertEqual(due_ids[0], "a1")
 
-    @patch("spotify_core.scan._build_priority_order", return_value=["a3"])
-    def test_resume_priority_reorders_remaining(self, mock_build):
+    @patch("spotify_core.scan._mb_classify_and_order",
+           return_value=(["a3", "a2"], set()))
+    def test_resume_reorders_remaining(self, mock_classify):
         artists = self._artists()
         state = State(in_progress=ScanProgress(
             due_ids=["a1", "a2", "a3"], processed_ids=["a1"]))
-        due, processed, used_priority = _plan_artists(
-            self.ctx, state, artists, 7, [], 365, cfg={"musicbrainz_priority_scan": True})
-        self.assertTrue(used_priority)
+        due, _, _ = _plan_artists(self.ctx, state, artists, 7, [], 365)
         due_ids = [a["id"] for a in due]
-        # a1 is processed, should be first
         self.assertEqual(due_ids[0], "a1")
-        # a3 is priority, should come next
         self.assertEqual(due_ids[1], "a3")
-        # a2 is non-priority remaining
         self.assertEqual(due_ids[2], "a2")
 
-    def test_use_priority_false_does_not_call_build(self):
+    @patch("spotify_core.scan._mb_classify_and_order",
+           return_value=(["a2", "a1", "a3"], {"a1"}))
+    def test_skip_ids_propagated(self, mock_classify):
         artists = self._artists()
-        with patch("spotify_core.scan._build_priority_order") as mock_build:
-            _plan_artists(self.ctx, State(), artists, 7, [], 365, cfg={})
-            mock_build.assert_not_called()
+        due, _, skip_ids = _plan_artists(self.ctx, State(), artists, 7, [], 365)
+        self.assertEqual(skip_ids, {"a1"})
 
-    def test_blocked_category_preserves_setting(self):
-        """When album scanning is blocked, _plan_artists returns None but
-        does not change the priority setting."""
+    def test_persists_resolved_state_from_classifier(self):
         artists = self._artists()
-        state = State(rate_limits={ARTIST_ALBUMS_CATEGORY: int(time.time()) + 3600})
-        self.write_config({"musicbrainz_priority_scan": True})
-        result = _plan_artists(self.ctx, state, artists, 7, [], 365, cfg={"musicbrainz_priority_scan": True})
-        self.assertIsNone(result)
-        cfg = core.load_config()
-        self.assertTrue(cfg["musicbrainz_priority_scan"])
-
-    @patch("spotify_core.scan._build_priority_order", return_value=["a3", "a2", "a1"])
-    def test_auto_heuristic_triggers_on_large_batch(self, mock_build):
-        """When due_count >= 20 and ratio >= 20%, priority activates automatically."""
-        artists = [artist_payload(f"a{i}", f"Artist {i}") for i in range(30)]
-        # All artists are due (no history), so due_count=30, total=30 -> 100% ratio
-        result = _plan_artists(self.ctx, State(), artists, 7, [], 365,
-                               cfg={}, total_artist_count=30)
-        self.assertIsNotNone(result)
-        _, _, used_priority = result
-        self.assertTrue(used_priority)
-        mock_build.assert_called_once()
-
-    @patch("spotify_core.scan._build_priority_order")
-    def test_auto_heuristic_skips_small_batch(self, mock_build):
-        """When due_count < 20, priority does not activate even with high ratio."""
-        artists = [artist_payload(f"a{i}", f"Artist {i}") for i in range(5)]
-        result = _plan_artists(self.ctx, State(), artists, 7, [], 365,
-                               cfg={}, total_artist_count=5)
-        self.assertIsNotNone(result)
-        _, _, used_priority = result
-        self.assertFalse(used_priority)
-        mock_build.assert_not_called()
-
-    @patch("spotify_core.scan._build_priority_order", return_value=["a3", "a2", "a1"])
-    def test_config_flag_overrides_heuristic(self, mock_build):
-        """Explicit config flag forces priority even when batch is small."""
-        artists = self._artists()  # 3 artists, below threshold
-        result = _plan_artists(self.ctx, State(), artists, 7, [], 365,
-                               cfg={"musicbrainz_priority_scan": True})
-        self.assertIsNotNone(result)
-        _, _, used_priority = result
-        self.assertTrue(used_priority)
-        mock_build.assert_called_once()
-
-
-class AutoDisablePriorityScanTests(ContextTestCase):
-    """Tests for _maybe_auto_disable_priority_scan."""
-
-    def setUp(self):
-        super().setUp()
-        self.write_token("test-token")
-
-    def test_disables_after_clean_completion(self):
-        cfg = {"musicbrainz_priority_scan": True}
         state = State()
-        _maybe_auto_disable_priority_scan(self.ctx, cfg, True, [], state)
-        self.assertFalse(cfg["musicbrainz_priority_scan"])
 
-    def test_does_not_disable_when_priority_not_used(self):
-        cfg = {"musicbrainz_priority_scan": True}
+        def classify(ctx, state, artists, days_lookback, total_count, interval_days):
+            state.artists["a1"] = Artist(id="a1", name="A", musicbrainz_id="mb-a1",
+                                         mb_active=True)
+            return [a["id"] for a in artists], set()
+
+        with patch("spotify_core.scan._mb_classify_and_order", side_effect=classify):
+            _plan_artists(self.ctx, state, artists, 7, [], 365)
+        self.assertEqual(state.artists["a1"].musicbrainz_id, "mb-a1")
+
+
+class MbActiveCheckFreshTests(unittest.TestCase):
+    """Tests for _active_check_is_fresh (30-day inactive re-check gate)."""
+
+    def test_fresh_check_returns_false_for_inactive_only(self):
+        entry = Artist(id="a1", name="A", mb_active=False,
+                       mb_active_checked=datetime.now(timezone.utc).isoformat())
+        # The gate only matters for inactive artists, but the helper just
+        # answers whether the stored timestamp is fresh.
+        self.assertTrue(_active_check_is_fresh(entry))
+
+    def test_stale_check_returns_false(self):
+        stale = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        entry = Artist(id="a1", name="A", mb_active=False, mb_active_checked=stale)
+        self.assertFalse(_active_check_is_fresh(entry))
+
+    def test_empty_checked_returns_false(self):
+        entry = Artist(id="a1", name="A", mb_active=False, mb_active_checked="")
+        self.assertFalse(_active_check_is_fresh(entry))
+
+    def test_garbage_checked_returns_false(self):
+        entry = Artist(id="a1", name="A", mb_active=False, mb_active_checked="nope")
+        self.assertFalse(_active_check_is_fresh(entry))
+
+
+class MbClassifyAndOrderTests(unittest.TestCase):
+    """Tests for _mb_classify_and_order (the MusicBrainz pre-pass)."""
+
+    def _artist(self, artist_id, name):
+        return {"id": artist_id, "name": name}
+
+    @patch("spotify_core.scan.get_artist_status_and_release_groups",
+           return_value=(True, []))
+    @patch("spotify_core.scan.resolve_spotify_to_mb", return_value="mb-123")
+    def test_active_no_releases_is_normal_not_skipped(self, mock_resolve, mock_status):
+        artists = [self._artist("a1", "A")]
+        ordered, skip = _mb_classify_and_order(MagicMock(), State(), artists, 365, 10, 7)
+        self.assertEqual(ordered, ["a1"])
+        self.assertEqual(skip, set())
+
+    @patch("spotify_core.scan.get_artist_status_and_release_groups",
+           return_value=(False, []))
+    @patch("spotify_core.scan.resolve_spotify_to_mb", return_value="mb-123")
+    def test_inactive_is_skipped_and_cached(self, mock_resolve, mock_status):
+        artists = [self._artist("a1", "A")]
         state = State()
-        _maybe_auto_disable_priority_scan(self.ctx, cfg, False, [], state)
-        self.assertTrue(cfg["musicbrainz_priority_scan"])
+        ordered, skip = _mb_classify_and_order(MagicMock(), state, artists, 365, 10, 7)
+        self.assertEqual(skip, {"a1"})
+        entry = state.artists["a1"]
+        self.assertFalse(entry.mb_active)
+        self.assertNotEqual(entry.mb_active_checked, "")
 
-    def test_does_not_disable_when_blocked(self):
-        cfg = {"musicbrainz_priority_scan": True}
+    def test_fresh_inactive_skip_makes_no_mb_call(self):
+        now_iso = datetime.now(timezone.utc).isoformat()
+        state = State(artists={
+            "a1": Artist(id="a1", name="A", musicbrainz_id="mb-123",
+                         mb_active=False, mb_active_checked=now_iso),
+        })
+        artists = [self._artist("a1", "A")]
+        with patch("spotify_core.scan.get_artist_status_and_release_groups") as mock_status, \
+             patch("spotify_core.scan.resolve_spotify_to_mb") as mock_resolve:
+            ordered, skip = _mb_classify_and_order(MagicMock(), state, artists, 365, 10, 7)
+        mock_status.assert_not_called()
+        mock_resolve.assert_not_called()
+        self.assertEqual(skip, {"a1"})
+
+    def test_stale_inactive_rechecks_and_stays_skipped(self):
+        stale = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        state = State(artists={
+            "a1": Artist(id="a1", name="A", musicbrainz_id="mb-123",
+                         mb_active=False, mb_active_checked=stale),
+        })
+        artists = [self._artist("a1", "A")]
+        with patch("spotify_core.scan.get_artist_status_and_release_groups",
+                   return_value=(False, [])) as mock_status, \
+             patch("spotify_core.scan.resolve_spotify_to_mb") as mock_resolve:
+            ordered, skip = _mb_classify_and_order(MagicMock(), state, artists, 365, 10, 7)
+        mock_status.assert_called_once()
+        mock_resolve.assert_not_called()
+        self.assertEqual(skip, {"a1"})
+        self.assertFalse(state.artists["a1"].mb_active)
+
+    def test_stale_inactive_recheck_flips_to_active(self):
+        stale = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        state = State(artists={
+            "a1": Artist(id="a1", name="A", musicbrainz_id="mb-123",
+                         mb_active=False, mb_active_checked=stale),
+        })
+        artists = [self._artist("a1", "A")]
+        with patch("spotify_core.scan.get_artist_status_and_release_groups",
+                   return_value=(True, [{
+                       "id": "rg1", "primary-type": "Album",
+                       "first-release-date": (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d"),
+                   }])) as mock_status, \
+             patch("spotify_core.scan.resolve_spotify_to_mb"):
+            ordered, skip = _mb_classify_and_order(MagicMock(), state, artists, 365, 10, 7)
+        self.assertEqual(ordered, ["a1"])
+        self.assertTrue(state.artists["a1"].mb_active)
+
+    @patch("spotify_core.scan.get_artist_status_and_release_groups")
+    @patch("spotify_core.scan.resolve_spotify_to_mb")
+    def test_hits_first_oldest_release_first(self, mock_resolve, mock_status):
+        ten_days_ago = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
+        thirty_days_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+        def status_side_effect(ctx, mbid):
+            if mbid == "mb-a1":
+                return True, [{"id": "r1", "primary-type": "Album",
+                               "first-release-date": ten_days_ago}]
+            if mbid == "mb-a2":
+                return True, [{"id": "r2", "primary-type": "Album",
+                               "first-release-date": thirty_days_ago}]
+            return True, []
+
+        def resolve_side_effect(spotify_id):
+            return "mb-" + spotify_id
+
+        mock_resolve.side_effect = resolve_side_effect
+        mock_status.side_effect = status_side_effect
+        artists = [self._artist("a1", "A"), self._artist("a2", "B"), self._artist("a3", "C")]
+        ordered, skip = _mb_classify_and_order(MagicMock(), State(), artists, 365, 30, 7)
+        # a2 released earlier, so it sorts before a1; hits lead the list
+        self.assertEqual(ordered[:2], ["a2", "a1"])
+        self.assertEqual(skip, set())
+
+    @patch("spotify_core.scan.get_artist_status_and_release_groups")
+    @patch("spotify_core.scan.resolve_spotify_to_mb")
+    def test_future_only_skipped_and_recorded(self, mock_resolve, mock_status):
+        mock_resolve.return_value = "mb-123"
+        mock_status.return_value = (True, [{
+            "id": "rg-future", "primary-type": "Album",
+            "first-release-date": "2099-12-31",
+        }])
+        artists = [self._artist("a1", "A")]
         state = State()
-        _maybe_auto_disable_priority_scan(self.ctx, cfg, True, [ARTIST_ALBUMS_CATEGORY], state)
-        self.assertTrue(cfg["musicbrainz_priority_scan"])
+        ordered, skip = _mb_classify_and_order(MagicMock(), state, artists, 365, 10, 7)
+        self.assertEqual(skip, {"a1"})
+        # Skipped artists stay in the ordering so the Spotify loop can mark
+        # them done, but they are recorded as future-only.
+        self.assertIn("rg-future", state.musicbrainz_upcoming)
+        self.assertEqual(state.musicbrainz_upcoming["rg-future"].artist_id, "a1")
 
-    def test_does_not_disable_when_in_progress(self):
-        cfg = {"musicbrainz_priority_scan": True}
-        state = State(in_progress=ScanProgress(due_ids=["a1"], processed_ids=[]))
-        _maybe_auto_disable_priority_scan(self.ctx, cfg, True, [], state)
-        self.assertTrue(cfg["musicbrainz_priority_scan"])
+    def test_future_only_artist_last_checked_not_updated(self):
+        """Skipped artists stay due: the classifier must not touch last_checked."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        state = State(artists={
+            "a1": Artist(id="a1", name="A", musicbrainz_id="mb-123",
+                         last_checked=now_iso, mb_active=True,
+                         mb_active_checked=now_iso),
+        })
+        artists = [self._artist("a1", "A")]
+        with patch("spotify_core.scan.get_artist_status_and_release_groups",
+                   return_value=(True, [{
+                       "id": "rg-f", "primary-type": "Album",
+                       "first-release-date": "2099-12-31",
+                   }])), \
+             patch("spotify_core.scan.resolve_spotify_to_mb"):
+            _mb_classify_and_order(MagicMock(), state, artists, 365, 10, 7)
+        self.assertEqual(state.artists["a1"].last_checked, now_iso)
 
-    def test_no_config_write_when_already_false(self):
-        cfg = {"musicbrainz_priority_scan": False}
+    def test_unresolvable_artist_is_normal(self):
+        artists = [self._artist("a1", "A")]
+        with patch("spotify_core.scan.resolve_spotify_to_mb", return_value=None), \
+             patch("spotify_core.scan.get_artist_status_and_release_groups") as mock_status:
+            ordered, skip = _mb_classify_and_order(MagicMock(), State(), artists, 365, 10, 7)
+        mock_status.assert_not_called()
+        self.assertEqual(ordered, ["a1"])
+        self.assertEqual(skip, set())
+
+    @patch("spotify_core.scan.get_artist_status_and_release_groups")
+    @patch("spotify_core.scan.resolve_spotify_to_mb")
+    def test_early_stop_once_batch_worth_hits(self, mock_resolve, mock_status):
+        # total_count=30, interval_days=7 -> batch_worth=4. A 10-artist due
+        # batch stops querying after 4 hits; the rest stay in the tail.
+        def resolve_side_effect(spotify_id):
+            return "mb-" + spotify_id[1:]  # "a1" -> "mb-1"
+
+        def status_side_effect(ctx, mbid):
+            k = int(mbid.rsplit("-", 1)[1])
+            date = (datetime.now() - timedelta(days=k)).strftime("%Y-%m-%d")
+            return True, [{"id": f"rg-{mbid}", "primary-type": "Album",
+                           "first-release-date": date}]
+
+        mock_resolve.side_effect = resolve_side_effect
+        mock_status.side_effect = status_side_effect
+        artists = [self._artist(f"a{i}", f"A{i}") for i in range(1, 11)]
+        ordered, skip = _mb_classify_and_order(MagicMock(), State(), artists, 365, 30, 7)
+        self.assertEqual(mock_status.call_count, 4)
+        self.assertEqual(len(ordered), 10)  # tail preserved in original order
+        self.assertEqual(skip, set())
+
+    @patch("spotify_core.scan.get_artist_status_and_release_groups")
+    @patch("spotify_core.scan.resolve_spotify_to_mb")
+    def test_hit_also_records_future_albums(self, mock_resolve, mock_status):
+        mock_resolve.return_value = "mb-123"
+        mock_status.return_value = (True, [
+            {"id": "rg-recent", "primary-type": "Album",
+             "first-release-date": (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")},
+            {"id": "rg-future", "primary-type": "Album",
+             "first-release-date": "2099-06-01"},
+        ])
+        artists = [self._artist("a1", "A")]
         state = State()
-        with patch.object(core.config, "save_config") as mock_save:
-            _maybe_auto_disable_priority_scan(self.ctx, cfg, True, [], state)
-            mock_save.assert_not_called()
+        ordered, skip = _mb_classify_and_order(MagicMock(), state, artists, 365, 10, 7)
+        self.assertEqual(ordered, ["a1"])
+        self.assertEqual(skip, set())
+        self.assertIn("rg-future", state.musicbrainz_upcoming)
 
-    def test_persists_config(self):
-        self.write_config({"musicbrainz_priority_scan": True})
-        state = State()
-        _maybe_auto_disable_priority_scan(self.ctx, self.config, True, [], state)
-        loaded = core.load_config()
-        self.assertFalse(loaded["musicbrainz_priority_scan"])
+    def test_lookup_failure_falls_back_to_normal(self):
+        artists = [self._artist("a1", "A")]
+        state = State(artists={"a1": Artist(id="a1", name="A", musicbrainz_id="mb-123")})
+        with patch("spotify_core.scan.get_artist_status_and_release_groups",
+                   side_effect=RuntimeError("MB down")), \
+             patch("spotify_core.scan.resolve_spotify_to_mb"):
+            ordered, skip = _mb_classify_and_order(MagicMock(), state, artists, 365, 10, 7)
+        self.assertEqual(ordered, ["a1"])
+        self.assertEqual(skip, set())
 
 
 class AutoReorderTests(ContextTestCase):
@@ -541,90 +641,67 @@ class AutoReorderTests(ContextTestCase):
 
 
 class RunScanWiringTests(ContextTestCase):
-    """Tests for run_scan wiring with priority and auto-disable."""
+    """Tests for run_scan wiring with the unconditional MB classifier."""
 
     def setUp(self):
         super().setUp()
         self.write_token("test-token")
 
-    def test_plan_artists_receives_days_and_priority_config(self):
+    def test_plan_artists_receives_days_and_total_count(self):
         artists = [artist_payload("a1", "A")]
-        self.write_config({"musicbrainz_priority_scan": True})
         with patch.object(core.scan, "get_access_token", return_value="tok"), \
              patch.object(core.scan, "get_followed_artists", return_value=artists), \
-             patch.object(core.scan, "_plan_artists") as mock_plan, \
-             patch.object(core.scan, "_maybe_auto_disable_priority_scan") as mock_disable:
-            mock_plan.return_value = ([], set(), False)
+             patch.object(core.scan, "_plan_artists") as mock_plan:
+            mock_plan.return_value = ([], set(), set())
             core.run_scan(days=180, interval_days=3, min_request_interval=0)
             mock_plan.assert_called_once()
             args, kwargs = mock_plan.call_args
-            # args: (ctx, state, artists, interval_days, blocked_categories, days, cfg)
+            # args: (ctx, state, artists, interval_days, blocked_categories, days)
             self.assertEqual(args[5], 180)  # days_lookback
-            self.assertTrue(args[6].get("musicbrainz_priority_scan"))  # cfg dict has flag
             self.assertEqual(kwargs.get("total_artist_count"), 1)  # len(artists)
 
-    def test_process_artists_receives_two_item_plan(self):
+    def test_process_artists_receives_three_item_plan(self):
         artists = [artist_payload("a1", "A")]
         with patch.object(core.scan, "get_access_token", return_value="tok"), \
              patch.object(core.scan, "get_followed_artists", return_value=artists), \
              patch.object(core.scan, "_plan_artists") as mock_plan, \
-             patch.object(core.scan, "_process_artists") as mock_process, \
-             patch.object(core.scan, "_maybe_auto_disable_priority_scan"):
-            mock_plan.return_value = ([artist_payload("a1", "A")], set(), False)
+             patch.object(core.scan, "_process_artists") as mock_process:
+            mock_plan.return_value = ([artist_payload("a1", "A")], set(), {"a1"})
             mock_process.return_value = False
             core.run_scan(days=365, interval_days=3, min_request_interval=0)
             args, kwargs = mock_process.call_args
             plan_arg = args[3]  # fourth positional arg is the plan tuple
-            self.assertEqual(len(plan_arg), 2)
+            self.assertEqual(len(plan_arg), 3)
+            self.assertEqual(plan_arg[2], {"a1"})
 
-    def test_auto_disable_called_after_finalize(self):
+    def test_finalize_runs_after_process(self):
         artists = [artist_payload("a1", "A")]
         call_order = []
         original_finalize = core.scan._finalize_progress
-        original_disable = core.scan._maybe_auto_disable_priority_scan
 
         def track_finalize(ctx, state, blocked):
             call_order.append("finalize")
             original_finalize(ctx, state, blocked)
 
-        def track_disable(ctx, cfg, used, blocked, state):
-            call_order.append("disable")
-            original_disable(ctx, cfg, used, blocked, state)
-
         with patch.object(core.scan, "get_access_token", return_value="tok"), \
              patch.object(core.scan, "get_followed_artists", return_value=artists), \
              patch.object(core.scan, "get_artist_albums", return_value=[]), \
              patch.object(core.scan, "_finalize_progress", side_effect=track_finalize), \
-             patch.object(core.scan, "_maybe_auto_disable_priority_scan", side_effect=track_disable), \
-             patch("spotify_core.scan.get_albums_in_window", return_value=[]), \
-             patch("spotify_core.scan.get_artist_active", return_value=True), \
-             patch("spotify_core.scan.resolve_spotify_to_mb", return_value=None):
+             patch.object(core.scan, "_mb_classify_and_order",
+                          side_effect=_classify_passthrough):
             core.run_scan(days=365, interval_days=3, min_request_interval=0)
-        self.assertEqual(call_order, ["finalize", "disable"])
+        self.assertEqual(call_order, ["finalize"])
 
-    def test_priority_scan_enabled_passed_to_plan(self):
-        artists = [artist_payload("a1", "A")]
-        self.write_config({"musicbrainz_priority_scan": True})
-        with patch.object(core.scan, "get_access_token", return_value="tok"), \
-             patch.object(core.scan, "get_followed_artists", return_value=artists), \
-             patch.object(core.scan, "_plan_artists") as mock_plan, \
-             patch.object(core.scan, "_maybe_auto_disable_priority_scan"):
-            mock_plan.return_value = ([], set(), False)
-            core.run_scan(days=365, interval_days=3, min_request_interval=0)
-            args, kwargs = mock_plan.call_args
-            self.assertTrue(args[6].get("musicbrainz_priority_scan"))  # cfg dict has flag
-
-    def test_priority_scan_disabled_by_default(self):
+    def test_classifier_always_runs_for_due_batch(self):
+        """The MB pre-pass runs unconditionally -- no config flag selects it."""
         artists = [artist_payload("a1", "A")]
         with patch.object(core.scan, "get_access_token", return_value="tok"), \
              patch.object(core.scan, "get_followed_artists", return_value=artists), \
-             patch.object(core.scan, "_plan_artists") as mock_plan, \
-             patch.object(core.scan, "_maybe_auto_disable_priority_scan"):
-            mock_plan.return_value = ([], set(), False)
+             patch.object(core.scan, "get_artist_albums", return_value=[]), \
+             patch.object(core.scan, "_mb_classify_and_order",
+                          side_effect=_classify_passthrough) as mock_classify:
             core.run_scan(days=365, interval_days=3, min_request_interval=0)
-            args, kwargs = mock_plan.call_args
-            # cfg dict should not have musicbrainz_priority_scan or it should be False
-            self.assertFalse(args[6].get("musicbrainz_priority_scan", False))
+        mock_classify.assert_called_once()
 
 
 if __name__ == "__main__":

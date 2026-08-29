@@ -16,11 +16,11 @@ from .api import (
 )
 from .artists import get_artist_albums, get_due_artists, get_followed_artists
 from .auth import get_access_token, load_refresh_token
-from .config import CHECK_INTERVAL_DAYS, DEFAULT_DAYS_LOOKBACK, get_version, load_config, save_config
+from .config import CHECK_INTERVAL_DAYS, DEFAULT_DAYS_LOOKBACK, get_version, load_config
 from .filters import is_auto_excluded, is_effectively_excluded, parse_release_date
 from .logging import clear_logs, log
 from .models import Album, Artist, MusicBrainzAlbum, ScanProgress
-from .musicbrainz import get_artist_active, get_albums_in_window, get_albums_with_future_dates, resolve_spotify_to_mb
+from .musicbrainz import MB_ACTIVE_REFRESH_DAYS, get_artist_status_and_release_groups, resolve_spotify_to_mb
 from .playlists import add_tracks_to_playlist, get_album_track_uris, playlist_order_is_stale, prune_playlist, reorder_playlist
 from .state import clear_expired_rate_limits, load_state, save_state, update_state
 
@@ -33,9 +33,6 @@ reorder_lock = threading.Lock()
 
 # Cancel event -- set by POST /cancel to abort a running scan.
 _cancel_event = threading.Event()
-
-AUTO_PRIORITY_MIN_DUE_ARTISTS = 20
-AUTO_PRIORITY_MIN_DUE_RATIO = 0.20
 
 
 def _fmt_ts(ts):
@@ -129,11 +126,10 @@ def run_scan(ctx, days=None, interval_days=None, min_request_interval=None, mark
         playlist_id = cfg["spotify_playlist_id"] or None
         blocked_categories = []
 
-        # Phase 0: Process MusicBrainz upcoming releases releasing today
-        _process_upcoming_releases(ctx, state)
+        # Phase 0: Prune MusicBrainz upcoming albums whose release date has passed
+        _prune_expired_upcoming(ctx, state)
 
         artists = _fetch_followed_artists(ctx, token, state, blocked_categories)
-        used_priority = False
         any_new_albums = False
         if artists:
             plan = _plan_artists(
@@ -143,16 +139,17 @@ def run_scan(ctx, days=None, interval_days=None, min_request_interval=None, mark
                 interval_days,
                 blocked_categories,
                 days,
-                cfg,
                 total_artist_count=len(artists),
             )
             if plan is not None:
-                due_artists, processed_ids, used_priority = plan
+                due_artists, processed_ids, skip_ids = plan
+                if skip_ids:
+                    log(f"MB: skipping {len(skip_ids)} artist(s) (inactive or future-only).")
                 any_new_albums = _process_artists(
                     ctx,
                     token,
                     state,
-                    (due_artists, processed_ids),
+                    (due_artists, processed_ids, skip_ids),
                     days,
                     market,
                     playlist_id,
@@ -160,7 +157,6 @@ def run_scan(ctx, days=None, interval_days=None, min_request_interval=None, mark
                 )
 
         _finalize_progress(ctx, state, blocked_categories)
-        _maybe_auto_disable_priority_scan(ctx, cfg, used_priority, blocked_categories, state)
         _prune_safely(ctx, token, state, days, playlist_id, blocked_categories)
         _maybe_auto_reorder(ctx, token, state, playlist_id, blocked_categories, any_new_albums)
 
@@ -181,14 +177,14 @@ def _authenticate(ctx, cfg):
     return get_access_token(ctx, client_id, client_secret, refresh_token)
 
 
-def _process_upcoming_releases(ctx, state):
-    """Check MusicBrainz upcoming albums for releases due today and remove them from the upcoming list."""
+def _prune_expired_upcoming(ctx, state):
+    """Remove MusicBrainz upcoming albums whose release date is today or in the past."""
     today = datetime.now().strftime("%Y-%m-%d")
     to_remove = []
     for rg_id, album in state.musicbrainz_upcoming.items():
         if album.release_date <= today:
             to_remove.append(rg_id)
-            log(f"MB: releasing today -- searching Spotify for '{album.name}' by {album.artist}")
+            log(f"MB: release date reached for '{album.name}' by {album.artist}")
     for rg_id in to_remove:
         del state.musicbrainz_upcoming[rg_id]
     if to_remove:
@@ -207,13 +203,30 @@ def _fetch_followed_artists(ctx, token, state, blocked_categories):
         return []
 
 
-def _build_priority_order(ctx, state, artists, days_lookback):
-    """Query MusicBrainz for artists with a release in the lookback
-    window. Returns a list of artist_ids sorted by release date
-    (oldest first). Artists that don't resolve or have nothing in the
-    window are simply absent from the result -- callers must fall back
-    to normal selection for everyone else."""
-    candidates = []  # (release_date, artist_id)
+def _mb_classify_and_order(ctx, state, artists, days_lookback, total_count, interval_days):
+    """Classify each due artist against MusicBrainz before any Spotify call.
+
+    Returns ``(ordered_ids, skip_ids)``:
+
+    - ``ordered_ids``: artist ids in processing order -- artists with a
+      release inside ``[today - days_lookback, today]`` first (oldest
+      release first), then everyone else in their original order. Skipped
+      artists are included so the caller can mark them done without a
+      Spotify call.
+    - ``skip_ids``: artist ids that must never hit the Spotify API this
+      run (inactive, or active with only future-dated release-groups).
+
+    Cached resolutions, active status, and future albums are persisted on
+    ``state`` so the benefit carries across runs.
+    """
+    batch_worth = max(1, total_count // max(1, interval_days))
+    hits = []  # (earliest_release_date, artist_id)
+    hits_seen = set()
+    skip = set()
+    now = datetime.now()
+    cutoff = now - timedelta(days=days_lookback)
+    now_utc_iso = datetime.now(timezone.utc).isoformat()
+
     for artist in artists:
         artist_id = artist["id"]
         entry = state.artists.get(artist_id)
@@ -227,44 +240,77 @@ def _build_priority_order(ctx, state, artists, days_lookback):
                 state.artists[artist_id] = entry
             entry.musicbrainz_id = mbid
 
-        try:
-            in_window = get_albums_in_window(ctx, mbid, days_lookback)
-        except Exception as e:
-            log(f"MB: priority lookup failed for {artist['name']}: {e}")
+        # Inactive verdict still fresh -> skip without any MB call.
+        if not entry.mb_active and entry.mb_active_checked and _active_check_is_fresh(entry):
+            skip.add(artist_id)
             continue
 
-        for rg in in_window:
-            release_date = parse_release_date(rg.get("first-release-date", ""))
-            if release_date is not None:
-                candidates.append((release_date, artist_id))
+        try:
+            active, release_groups = get_artist_status_and_release_groups(ctx, mbid)
+        except Exception as e:
+            log(f"MB: lookup failed for {artist['name']}: {e}")
+            continue
 
-    candidates.sort(key=lambda c: c[0])
-    seen = set()
-    ordered_ids = []
-    for _, artist_id in candidates:
-        if artist_id not in seen:
-            seen.add(artist_id)
-            ordered_ids.append(artist_id)
-    return ordered_ids
+        entry.mb_active = active
+        entry.mb_active_checked = now_utc_iso
+
+        if not active:
+            log(f"MB: {artist['name']} is inactive -- skipping")
+            skip.add(artist_id)
+            continue
+
+        release_times = []
+        has_future = False
+        for rg in release_groups:
+            rg_date = parse_release_date(rg.get("first-release-date", ""))
+            if rg_date is None:
+                continue
+            if rg_date > now:
+                has_future = True
+                rg_id = rg["id"]
+                if rg_id not in state.musicbrainz_upcoming:
+                    state.musicbrainz_upcoming[rg_id] = MusicBrainzAlbum(
+                        id=rg_id,
+                        name=rg.get("title", ""),
+                        artist=artist["name"],
+                        artist_id=artist_id,
+                        release_date=rg.get("first-release-date", ""),
+                        first_seen=now_utc_iso,
+                    )
+            elif cutoff <= rg_date:
+                release_times.append(rg_date)
+
+        if release_times:
+            hits.append((min(release_times), artist_id))
+            hits_seen.add(artist_id)
+            # Once enough hits are known for this batch, stop querying MB
+            # so large backlogs don't burn the rate limit.
+            if len(artists) > batch_worth and len(hits_seen) >= batch_worth:
+                break
+        elif has_future:
+            log(f"MB: {artist['name']} has only upcoming releases -- skipping")
+            skip.add(artist_id)
+
+    hits.sort(key=lambda h: h[0])
+    ordered_ids = [aid for _, aid in hits]
+    ordered_ids += [a["id"] for a in artists if a["id"] not in hits_seen]
+    return ordered_ids, skip
 
 
-def _should_use_priority_scan(cfg, due_count, total_count):
-    if cfg.get("musicbrainz_priority_scan", False):
-        return True
-    if total_count <= 0:
+def _active_check_is_fresh(entry):
+    """True when the cached inactive verdict is recent enough to trust."""
+    try:
+        checked_dt = datetime.fromisoformat(entry.mb_active_checked)
+        return (datetime.now(timezone.utc) - checked_dt).days < MB_ACTIVE_REFRESH_DAYS
+    except (ValueError, TypeError):
         return False
-    return (
-        due_count >= AUTO_PRIORITY_MIN_DUE_ARTISTS
-        and (due_count / total_count) >= AUTO_PRIORITY_MIN_DUE_RATIO
-    )
 
 
 def _plan_artists(ctx, state, artists, interval_days, blocked_categories,
-                  days_lookback, cfg=None, total_artist_count=None):
+                  days_lookback, total_artist_count=None):
     """Resume an interrupted scan or start a fresh batch. Returns
-    (due_artists, processed_ids, used_priority) or None when the album
+    (due_artists, processed_ids, skip_ids) or None when the album
     phase is blocked."""
-    cfg = cfg or {}
     ip = state.in_progress
     if ip is not None:
         processed_ids = set(ip.processed_ids)
@@ -289,33 +335,27 @@ def _plan_artists(ctx, state, artists, interval_days, blocked_categories,
             f"{remaining} artist(s) will be checked on the next scan.")
         return None
 
-    used_priority = False
     total_count = total_artist_count if total_artist_count is not None else len(artists)
-    use_priority = _should_use_priority_scan(cfg, len(remaining_artists), total_count)
+    ordered_ids, skip_ids = _mb_classify_and_order(
+        ctx, state, remaining_artists, days_lookback, total_count, interval_days)
 
-    if use_priority and remaining_artists:
-        priority_ids = _build_priority_order(ctx, state, remaining_artists, days_lookback)
-        priority_set = set(priority_ids)
-        by_id = {a["id"]: a for a in remaining_artists}
-        prioritized_remaining = (
-            [by_id[aid] for aid in priority_ids if aid in by_id]
-            + [a for a in remaining_artists if a["id"] not in priority_set]
-        )
-        processed_prefix = [a for a in due_artists if a["id"] in processed_ids]
-        due_artists = processed_prefix + prioritized_remaining
-        state.in_progress.due_ids = [a["id"] for a in due_artists]
-        save_state(ctx, state)
-        used_priority = True
-        log(f"MB: priority-ordered {len(remaining_artists)} pending artist(s).")
+    by_id = {a["id"]: a for a in remaining_artists}
+    prioritized_remaining = [by_id[aid] for aid in ordered_ids if aid in by_id]
+    processed_prefix = [a for a in due_artists if a["id"] in processed_ids]
+    due_artists = processed_prefix + prioritized_remaining
+    state.in_progress.due_ids = [a["id"] for a in due_artists]
+    save_state(ctx, state)
 
-    return due_artists, processed_ids, used_priority
+    if hits := [aid for aid in ordered_ids if aid not in skip_ids]:
+        log(f"MB: classified due batch; {len(hits)} artist(s) prioritized for Spotify.")
+    return due_artists, processed_ids, skip_ids
 
 
 def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked_categories):
-    due_artists, processed_ids = plan
+    due_artists, processed_ids, skip_ids = plan
+    skip_ids = set(skip_ids or ())
     cfg = load_config(ctx)
     verbose = cfg.get("verbose_logging", False)
-    mb_refresh_days = cfg.get("musicbrainz_active_refresh_days", 30)
     cutoff = datetime.now() - timedelta(days=days)
     now_iso = datetime.now(timezone.utc).isoformat()
     any_new_albums = False
@@ -327,85 +367,13 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
                 log("  Scan cancelled by user.")
                 break
 
-            # --- MusicBrainz integration ---
-            artist_entry = state.artists.get(artist["id"])
-            if artist_entry is None:
-                artist_entry = Artist(id=artist["id"], name=artist["name"])
-                state.artists[artist["id"]] = artist_entry
-
-            # Step 1: Resolve MusicBrainz ID if not cached
-            if not artist_entry.musicbrainz_id:
-                mbid = resolve_spotify_to_mb(artist["id"])
-                if mbid:
-                    artist_entry.musicbrainz_id = mbid
-                    log(f"MB: resolved {artist['name']} -> {mbid}")
-                else:
-                    log(f"MB: no MusicBrainz mapping for {artist['name']}, skipping MB features")
-
-            # Step 2: Check active status (only for artists currently marked active)
-            if artist_entry.musicbrainz_id and artist_entry.mb_active:
-                if not artist_entry.mb_active_checked:
-                    # First time check
-                    is_active = get_artist_active(artist_entry.musicbrainz_id)
-                    artist_entry.mb_active = is_active
-                    artist_entry.mb_active_checked = now_iso
-                    log(f"MB: {artist['name']} is {'active' if is_active else 'inactive'}")
-                else:
-                    # Check if refresh is due
-                    try:
-                        last_checked_dt = datetime.fromisoformat(artist_entry.mb_active_checked)
-                        days_since = (datetime.now(timezone.utc) - last_checked_dt).days
-                        if days_since >= mb_refresh_days:
-                            is_active = get_artist_active(artist_entry.musicbrainz_id)
-                            artist_entry.mb_active = is_active
-                            artist_entry.mb_active_checked = now_iso
-                            log(f"MB: {artist['name']} is {'active' if is_active else 'inactive'}")
-                    except (ValueError, TypeError):
-                        pass
-
-            # Step 3: Fetch MusicBrainz upcoming releases
-            if artist_entry.musicbrainz_id:
-                try:
-                    upcoming = get_albums_with_future_dates(ctx, artist_entry.musicbrainz_id)
-                    if upcoming:
-                        log(f"MB: {len(upcoming)} upcoming album(s) for {artist['name']}")
-                        for rg in upcoming:
-                            rg_id = rg["id"]
-                            if rg_id not in state.musicbrainz_upcoming:
-                                state.musicbrainz_upcoming[rg_id] = MusicBrainzAlbum(
-                                    id=rg_id,
-                                    name=rg.get("title", ""),
-                                    artist=artist["name"],
-                                    artist_id=artist["id"],
-                                    release_date=rg.get("first-release-date", ""),
-                                    first_seen=now_iso,
-                                )
-                        save_state(ctx, state)
-                except Exception as e:
-                    log(f"MB: failed to fetch release groups for {artist['name']}: {e}")
-
-            # Step 4: Skip logic
-            # If artist has any MusicBrainz upcoming album with a future release date, skip Spotify check.
-            has_upcoming = any(
-                mb.artist_id == artist["id"] and mb.release_date > datetime.now().strftime("%Y-%m-%d")
-                for mb in state.musicbrainz_upcoming.values()
-            )
-            if has_upcoming:
+            if artist["id"] in skip_ids:
                 if verbose:
-                    log(f"  [{i}/{len(due_artists)}] {artist['name']} - skipping (upcoming MB release)")
+                    log(f"  [{i}/{len(due_artists)}] {artist['name']} - skipped (MB)")
                 else:
-                    log(f"  [{i}/{len(due_artists)}] {artist['name']} - skipped (upcoming MB release)")
-                processed_ids.add(artist["id"])
-                state.in_progress.processed_ids = list(processed_ids)
-                save_state(ctx, state)
-                continue
-
-            # If inactive and no upcoming MB albums, skip.
-            if not artist_entry.mb_active and not has_upcoming:
-                if verbose:
-                    log(f"  [{i}/{len(due_artists)}] {artist['name']} - skipping (inactive)")
-                else:
-                    log(f"  [{i}/{len(due_artists)}] {artist['name']} - skipped (inactive)")
+                    log(f"  [{i}/{len(due_artists)}] {artist['name']} - skipped (MB)")
+                # Marked done this run but last_checked is left stale so the
+                # artist stays due and is reclassified next scan.
                 processed_ids.add(artist["id"])
                 state.in_progress.processed_ids = list(processed_ids)
                 save_state(ctx, state)
@@ -435,12 +403,13 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
                 any_new_albums = True
             else:
                 log("    No new albums added")
+            existing = state.artists.get(artist["id"])
             state.artists[artist["id"]] = Artist(
                 id=artist["id"], name=artist["name"], last_checked=now_iso,
                 scanned_with=get_version(ctx),
-                musicbrainz_id=artist_entry.musicbrainz_id,
-                mb_active=artist_entry.mb_active,
-                mb_active_checked=artist_entry.mb_active_checked,
+                musicbrainz_id=existing.musicbrainz_id if existing else "",
+                mb_active=existing.mb_active if existing else True,
+                mb_active_checked=existing.mb_active_checked if existing else "",
             )
             processed_ids.add(artist["id"])
             state.in_progress.processed_ids = list(processed_ids)
@@ -497,19 +466,6 @@ def _prune_safely(ctx, token, state, days, playlist_id, blocked_categories):
     except RateLimitError as e:
         log(f"Skipping prune -- {e.category} rate-limited.")
         blocked_categories.append(e.category)
-
-
-def _maybe_auto_disable_priority_scan(ctx, cfg, used_priority, blocked_categories, state):
-    if not used_priority:
-        return
-    if blocked_categories or state.in_progress is not None:
-        return
-    if not cfg.get("musicbrainz_priority_scan", False):
-        return
-
-    cfg["musicbrainz_priority_scan"] = False
-    save_config(ctx, cfg)
-    log("MB priority scan completed cleanly; disabled MusicBrainz priority scan setting.")
 
 
 def _maybe_auto_reorder(ctx, token, state, playlist_id, blocked_categories, any_new_albums):

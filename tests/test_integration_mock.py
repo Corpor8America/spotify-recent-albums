@@ -12,6 +12,12 @@ from tests.mock_spotify_server import MockSpotifyServer
 from tests.support import make_context, write_config
 
 
+def _passthrough_classify(ctx, state, artists, days_lookback, total_count, interval_days):
+    """MB classifier fake for integration tests that don't exercise it:
+    keeps every artist in their original order with nothing skipped."""
+    return [a["id"] for a in artists], set()
+
+
 class MockServerTestCase(unittest.TestCase):
     """Base class that starts a mock server and points a fresh context's
     API/token URLs at it."""
@@ -143,6 +149,10 @@ class RunScanAgainstMockServerTests(MockServerTestCase):
     num_artists = 6
 
     def setUp(self):
+        self._classify_patcher = patch("spotify_core.scan._mb_classify_and_order",
+                                       side_effect=_passthrough_classify)
+        self._classify_patcher.start()
+        self.addCleanup(self._classify_patcher.stop)
         self.config = write_config(self.ctx, {"min_request_interval": 0})
         core.save_refresh_token("test_refresh")
         with patch.object(core.auth, "get_access_token", return_value="mock-access-token"):
@@ -210,7 +220,6 @@ class PriorityScanIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.config = write_config(self.ctx, {
             "min_request_interval": 0,
-            "musicbrainz_priority_scan": True,
         })
         core.save_refresh_token("test_refresh")
         with patch.object(core.auth, "get_access_token", return_value="mock-access-token"):
@@ -218,7 +227,6 @@ class PriorityScanIntegrationTests(unittest.TestCase):
         write_config(self.ctx, {
             "min_request_interval": 0,
             "spotify_playlist_id": playlist_id,
-            "musicbrainz_priority_scan": True,
         })
         # Configure MB mappings: map the mock Spotify artist IDs to MBIDs
         # The mock Spotify server creates artists a000000000000000000001 .. a00000000000000000000N
@@ -237,14 +245,11 @@ class PriorityScanIntegrationTests(unittest.TestCase):
         """Return a patch context manager that redirects MB API calls to the mock server."""
         return patch("spotify_core.musicbrainz._MB_BASE_URL", self.mb_server.base_url)
 
-    def test_priority_scan_completes_and_disables_setting(self):
-        """A priority-enabled scan that completes cleanly should auto-disable
-        the musicbrainz_priority_scan config setting."""
+    def test_priority_scan_completes_cleanly(self):
+        """The MB pre-pass runs unconditionally and the scan completes cleanly."""
         with self._patch_mb_base_url():
             result = core.run_scan(days=3650, interval_days=3, min_request_interval=0)
         self.assertEqual(result["status"], "ok")
-        cfg = core.load_config()
-        self.assertFalse(cfg["musicbrainz_priority_scan"])
 
     def test_priority_scan_discovers_albums(self):
         """A priority-enabled scan should still discover and playlist albums."""
@@ -276,47 +281,46 @@ class PriorityScanIntegrationTests(unittest.TestCase):
         state = core.load_state()
         self.assertGreater(len(state.known_albums), 0)
 
-    def test_disabled_priority_scan_skips_priority_pass(self):
-        """When musicbrainz_priority_scan is False, the priority pass
-        (_build_priority_order) should not be called, but normal MB
-        integration (resolution, active status) still runs."""
-        write_config(self.ctx, {"musicbrainz_priority_scan": False})
-        with self._patch_mb_base_url(), \
-             patch("spotify_core.scan._build_priority_order") as mock_build:
+    def test_classification_runs_without_config_flag(self):
+        """The MB pre-pass runs on every scan -- no config flag selects it."""
+        write_config(self.ctx, {"min_request_interval": 0})
+        with self._patch_mb_base_url():
             core.run_scan(days=3650, interval_days=3, min_request_interval=0)
-        mock_build.assert_not_called()
+        artist_lookups = [
+            path for _, path in self.mb_server.snapshot()["request_log"]
+            if path.startswith("/ws/2/artist/")
+        ]
+        self.assertGreater(len(artist_lookups), 0)
 
-    def test_priority_scan_with_rate_limit_keeps_setting_enabled(self):
-        """If the scan hits a Spotify rate limit, the priority setting
-        should NOT be auto-disabled."""
-        self.spotify_server.configure(daily_quota=2)
+    def test_scan_with_rate_limit_preserves_resume_state(self):
+        """A rate-limited scan keeps its resume state and can be retried."""
+        # setUp already used 2 requests (GET /me + playlist create). Reset so
+        # this test's quota applies to it alone: followed fetch (1), then
+        # album fetches. With quota=4 the album phase is interrupted after
+        # three artists -- after _plan_artists created in_progress.
+        self.spotify_server.reset_quota()
+        self.spotify_server.configure(daily_quota=4)
+        self.addCleanup(self.spotify_server.configure, daily_quota=None)
+        self.addCleanup(self.spotify_server.reset_quota)
         with self._patch_mb_base_url():
             result = core.run_scan(days=3650, interval_days=3, min_request_interval=0)
         self.assertNotEqual(result["blocked_categories"], [])
-        cfg = core.load_config()
-        self.assertTrue(cfg["musicbrainz_priority_scan"])
-        # Clean up: reset quota for later tests
-        self.spotify_server.configure(daily_quota=None)
-        self.spotify_server.reset_quota()
+        self.assertIsNotNone(core.load_state().in_progress)
 
-    def test_second_scan_with_priority_disabled_skips_priority_pass(self):
-        """After auto-disable, a second scan should not invoke the priority
-        pass, though normal MB integration (resolution, active status) still runs."""
+    def test_second_scan_reclassifies_and_finds_releases(self):
+        """After a first scan, resetting artist history leads to a fresh
+        MB classification pass on the next scan."""
         with self._patch_mb_base_url():
             core.run_scan(days=3650, interval_days=3, min_request_interval=0)
-        # Setting should now be False
-        self.assertFalse(core.load_config()["musicbrainz_priority_scan"])
 
-        # Reset artists so second scan has due artists
+        # Reset artists and albums so everything is due again
         core.save_state(core.models.State())
-        self.spotify_server.configure(artist_release_dates={
-            f"a{i:021d}": "2026-07-01" for i in range(1, self.num_artists + 1)
-        })
 
-        with self._patch_mb_base_url(), \
-             patch("spotify_core.scan._build_priority_order") as mock_build:
-            core.run_scan(days=3650, interval_days=0, min_request_interval=0)
-        mock_build.assert_not_called()
+        with self._patch_mb_base_url():
+            result = core.run_scan(days=3650, interval_days=3, min_request_interval=0)
+        self.assertEqual(result["status"], "ok")
+        state = core.load_state()
+        self.assertGreater(len(state.known_albums), 0)
 
 
 class AutoReorderIntegrationTests(unittest.TestCase):
@@ -345,6 +349,10 @@ class AutoReorderIntegrationTests(unittest.TestCase):
         cls._tmp.cleanup()
 
     def setUp(self):
+        self._classify_patcher = patch("spotify_core.scan._mb_classify_and_order",
+                                       side_effect=_passthrough_classify)
+        self._classify_patcher.start()
+        self.addCleanup(self._classify_patcher.stop)
         self.config = write_config(self.ctx, {"min_request_interval": 0})
         core.save_refresh_token("test_refresh")
         with patch.object(core.auth, "get_access_token", return_value="mock-access-token"):

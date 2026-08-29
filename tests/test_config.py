@@ -31,11 +31,6 @@ class ConfigFileTests(ContextTestCase):
     def test_is_configured_true_when_set(self):
         self.assertTrue(core.is_configured())
 
-    def test_musicbrainz_priority_scan_defaults_false(self):
-        (self.tmp_path / "app-config.json").unlink()
-        config = core.load_config()
-        self.assertFalse(config["musicbrainz_priority_scan"])
-
 
 class GetVersionTests(ContextTestCase):
     def test_returns_version_string(self):

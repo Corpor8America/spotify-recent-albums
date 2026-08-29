@@ -133,9 +133,7 @@ def create_app():
                     "days_lookback": _parse_int_field(request.form, "days_lookback", existing["days_lookback"], min_value=0),
                     "cron_schedule": request.form.get("cron_schedule", existing["cron_schedule"]).strip(),
                     "public_base_url": request.form.get("public_base_url", existing["public_base_url"]).rstrip("/"),
-                    "musicbrainz_active_refresh_days": _parse_int_field(request.form, "musicbrainz_active_refresh_days", existing.get("musicbrainz_active_refresh_days", 30), min_value=1),
                     "verbose_logging": request.form.get("verbose_logging") == "true",
-                    "musicbrainz_priority_scan": request.form.get("musicbrainz_priority_scan") == "true",
                 }
                 _validate_cron_schedule(c["cron_schedule"])
                 if c["spotify_playlist_id"] and not re.fullmatch(r"[A-Za-z0-9]{15,}", c["spotify_playlist_id"]):

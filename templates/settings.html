@@ -98,22 +98,6 @@
     <div class="settings-group">
       <h3><span class="material-symbols-outlined" style="font-size: 18px; vertical-align: middle; margin-right: 0.25rem;">music_note</span> MusicBrainz</h3>
       <p class="muted" style="margin-bottom: 1rem;">MusicBrainz provides upcoming album data and artist active status to optimize scans.</p>
-      <div class="settings-row">
-        <div class="form-field">
-          <label for="musicbrainz_active_refresh_days">Active status refresh interval</label>
-          <input type="number" id="musicbrainz_active_refresh_days" name="musicbrainz_active_refresh_days" value="{{ config.musicbrainz_active_refresh_days }}" min="1" max="365">
-          <span class="helper-text">Re-check active artists on MusicBrainz every N days</span>
-        </div>
-      </div>
-      <div class="settings-row" style="grid-template-columns: 1fr;">
-        <div class="form-field">
-          <label for="musicbrainz_priority_scan">
-            <input type="checkbox" id="musicbrainz_priority_scan" name="musicbrainz_priority_scan" value="true" {% if config.musicbrainz_priority_scan %}checked{% endif %}>
-            Prioritize artists with recent MusicBrainz releases during the next full catch-up scan
-          </label>
-          <span class="helper-text">This turns itself off after the scan completes cleanly.</span>
-        </div>
-      </div>
     </div>
 
     <!-- Group: Logging -->

@@ -83,41 +83,6 @@ class AppRoutesTests(ContextTestCase):
         }, follow_redirects=False)
         self.assertEqual(response.status_code, 302)
 
-    def test_settings_roundtrips_musicbrainz_priority_scan(self):
-        self.client.post("/settings", data={
-            "spotify_client_id": "id",
-            "spotify_client_secret": "secret",
-            "spotify_playlist_id": "",
-            "interval_days": "3",
-            "min_request_interval": "10",
-            "days_lookback": "365",
-            "cron_schedule": "0 6 * * *",
-            "public_base_url": "http://localhost:8080",
-            "musicbrainz_priority_scan": "true",
-        })
-        config = core.load_config()
-        self.assertTrue(config["musicbrainz_priority_scan"])
-
-    def test_settings_unchecked_musicbrainz_priority_scan(self):
-        self.write_config({"musicbrainz_priority_scan": True})
-        self.client.post("/settings", data={
-            "spotify_client_id": "id",
-            "spotify_client_secret": "secret",
-            "spotify_playlist_id": "",
-            "interval_days": "3",
-            "min_request_interval": "10",
-            "days_lookback": "365",
-            "cron_schedule": "0 6 * * *",
-            "public_base_url": "http://localhost:8080",
-        })
-        config = core.load_config()
-        self.assertFalse(config["musicbrainz_priority_scan"])
-
-    def test_settings_page_shows_priority_scan_checkbox(self):
-        response = self.client.get("/settings")
-        self.assertIn(b"musicbrainz_priority_scan", response.data)
-        self.assertIn(b"Prioritize artists", response.data)
-
     # --- create playlist -----------------------------------------------------
 
     def test_create_playlist_requires_connection(self):

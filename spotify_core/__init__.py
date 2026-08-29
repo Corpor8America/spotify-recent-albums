@@ -142,8 +142,10 @@ run_scan = _bind(scan, "run_scan")
 resolve_spotify_to_mb = musicbrainz.resolve_spotify_to_mb
 get_artist_release_groups = musicbrainz.get_artist_release_groups
 get_artist_active = musicbrainz.get_artist_active
+get_artist_status_and_release_groups = musicbrainz.get_artist_status_and_release_groups
 get_albums_with_future_dates = musicbrainz.get_albums_with_future_dates
 get_albums_in_window = musicbrainz.get_albums_in_window
+MB_ACTIVE_REFRESH_DAYS = musicbrainz.MB_ACTIVE_REFRESH_DAYS
 
 
 def endpoint_category(method, url):

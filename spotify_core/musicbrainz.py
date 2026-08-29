@@ -12,6 +12,10 @@ from .logging import log
 _last_request_time = 0.0
 _MIN_INTERVAL = 1.0
 
+# How long a cached "inactive" verdict stays fresh before an artist's
+# active status is re-checked with MusicBrainz.
+MB_ACTIVE_REFRESH_DAYS = 30
+
 _MB_BASE_URL = "https://musicbrainz.org"
 
 _USER_AGENT = "SpotifyRecentlyReleasedAlbums/1.0 (https://github.com/anomalyco/Spotify-Recently-Released-Albums)"
@@ -109,6 +113,47 @@ def get_artist_active(mbid):
     except Exception as e:
         log(f"MB: Failed to check active status for {mbid}: {e}")
         return True  # Assume active on error
+
+
+def get_artist_status_and_release_groups(ctx, mbid):
+    """Fetch an artist's active status and album release-groups in one call.
+
+    Returns ``(active, release_groups)`` where ``active`` is True when the
+    artist is not marked ended in MusicBrainz and ``release_groups`` is a list
+    of release-groups of type 'album'. Assumes active / returns empty on error
+    so a failure never blocks the scan.
+    """
+    active = True
+    release_groups = []
+    offset = 0
+    limit = 100
+    while True:
+        url = f"{_MB_BASE_URL}/ws/2/artist/{mbid}"
+        params = {
+            "inc": "release-groups",
+            "fmt": "json",
+            "limit": limit,
+            "offset": offset,
+        }
+        try:
+            data = mb_request(url, params)
+        except Exception as e:
+            log(f"MB: Failed to fetch status/release-groups for {mbid}: {e}")
+            break
+        if data is None:
+            break
+        if offset == 0:
+            life_span = data.get("life_span", {})
+            active = not life_span.get("ended", False)
+        groups = [
+            rg for rg in data.get("release-groups", [])
+            if rg.get("primary-type") == "Album"
+        ]
+        release_groups.extend(groups)
+        if len(groups) < limit:
+            break
+        offset += limit
+    return active, release_groups
 
 
 def get_albums_with_future_dates(ctx, mbid):

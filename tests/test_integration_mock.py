@@ -7,8 +7,15 @@ from unittest.mock import patch
 
 import spotify_core as core
 from app import create_app
+from tests.mock_musicbrainz_server import MockMusicBrainzServer
 from tests.mock_spotify_server import MockSpotifyServer
 from tests.support import make_context, write_config
+
+
+def _passthrough_classify(ctx, state, artists, days_lookback, total_count, interval_days):
+    """MB classifier fake for integration tests that don't exercise it:
+    keeps every artist in their original order with nothing skipped."""
+    return [a["id"] for a in artists], set()
 
 
 class MockServerTestCase(unittest.TestCase):
@@ -142,6 +149,10 @@ class RunScanAgainstMockServerTests(MockServerTestCase):
     num_artists = 6
 
     def setUp(self):
+        self._classify_patcher = patch("spotify_core.scan._mb_classify_and_order",
+                                       side_effect=_passthrough_classify)
+        self._classify_patcher.start()
+        self.addCleanup(self._classify_patcher.stop)
         self.config = write_config(self.ctx, {"min_request_interval": 0})
         core.save_refresh_token("test_refresh")
         with patch.object(core.auth, "get_access_token", return_value="mock-access-token"):
@@ -175,6 +186,246 @@ class RunScanAgainstMockServerTests(MockServerTestCase):
                                 "interval_days": 0})
         core.run_scan(days=3650, min_request_interval=0)
         self.assertEqual(self.server.snapshot()["playlist_track_count"], count_after_first)
+
+
+class PriorityScanIntegrationTests(unittest.TestCase):
+    """Integration tests using both MockSpotifyServer and MockMusicBrainzServer
+    to verify the priority scan feature end-to-end."""
+
+    num_artists = 6
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.ctx = make_context(Path(cls._tmp.name))
+        core.set_context(cls.ctx)
+        cls.spotify_server = MockSpotifyServer(num_artists=cls.num_artists)
+        cls.spotify_server.start()
+        cls.mb_server = MockMusicBrainzServer()
+        cls.mb_server.start()
+        cls._orig_api_base = cls.ctx.spotify_api_base
+        cls._orig_token_url = cls.ctx.spotify_token_url
+        cls.ctx.spotify_api_base = cls.spotify_server.base_url + "/v1"
+        cls.ctx.spotify_token_url = cls.spotify_server.base_url + "/token"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.ctx.spotify_api_base = cls._orig_api_base
+        cls.ctx.spotify_token_url = cls._orig_token_url
+        core.set_context(None)
+        cls.spotify_server.stop()
+        cls.mb_server.stop()
+        cls._tmp.cleanup()
+
+    def setUp(self):
+        self.config = write_config(self.ctx, {
+            "min_request_interval": 0,
+        })
+        core.save_refresh_token("test_refresh")
+        with patch.object(core.auth, "get_access_token", return_value="mock-access-token"):
+            playlist_id = core.create_playlist("token", "Priority Playlist")
+        write_config(self.ctx, {
+            "min_request_interval": 0,
+            "spotify_playlist_id": playlist_id,
+        })
+        # Configure MB mappings: map the mock Spotify artist IDs to MBIDs
+        # The mock Spotify server creates artists a000000000000000000001 .. a00000000000000000000N
+        mb_mappings = {}
+        for i in range(1, self.num_artists + 1):
+            spotify_id = f"a{i:021d}"
+            mb_mappings[spotify_id] = f"mb-artist-{i:03d}"
+        self.mb_server.configure(artist_mappings=mb_mappings)
+
+    def tearDown(self):
+        if self.ctx.store.state_file.exists():
+            self.ctx.store.state_file.unlink()
+        self.mb_server.reset()
+
+    def _patch_mb_base_url(self):
+        """Return a patch context manager that redirects MB API calls to the mock server."""
+        return patch("spotify_core.musicbrainz._MB_BASE_URL", self.mb_server.base_url)
+
+    def test_priority_scan_completes_cleanly(self):
+        """The MB pre-pass runs unconditionally and the scan completes cleanly."""
+        with self._patch_mb_base_url():
+            result = core.run_scan(days=3650, interval_days=3, min_request_interval=0)
+        self.assertEqual(result["status"], "ok")
+
+    def test_priority_scan_discovers_albums(self):
+        """A priority-enabled scan should still discover and playlist albums."""
+        with self._patch_mb_base_url():
+            result = core.run_scan(days=3650, interval_days=3, min_request_interval=0)
+        self.assertEqual(result["status"], "ok")
+
+        state = core.load_state()
+        self.assertGreater(len(state.known_albums), 0)
+        added = [a for a in state.known_albums.values() if a.added_to_playlist]
+        self.assertGreater(len(added), 0)
+
+    def test_priority_scan_persists_mb_ids(self):
+        """The priority pass should resolve and persist MB IDs in state."""
+        with self._patch_mb_base_url():
+            core.run_scan(days=3650, interval_days=3, min_request_interval=0)
+
+        state = core.load_state()
+        mb_ids = [a.musicbrainz_id for a in state.artists.values() if a.musicbrainz_id]
+        # At least some artists should have resolved MB IDs from the MB mock
+        self.assertGreater(len(mb_ids), 0)
+
+    def test_priority_scan_handles_mb_failure_gracefully(self):
+        """If the MB mock is unreachable, the scan should still complete
+        via the normal Spotify path."""
+        with patch("spotify_core.musicbrainz._MB_BASE_URL", "http://127.0.0.1:1"):
+            result = core.run_scan(days=3650, interval_days=3, min_request_interval=0)
+        self.assertEqual(result["status"], "ok")
+        state = core.load_state()
+        self.assertGreater(len(state.known_albums), 0)
+
+    def test_classification_runs_without_config_flag(self):
+        """The MB pre-pass runs on every scan -- no config flag selects it."""
+        write_config(self.ctx, {"min_request_interval": 0})
+        with self._patch_mb_base_url():
+            core.run_scan(days=3650, interval_days=3, min_request_interval=0)
+        artist_lookups = [
+            path for _, path in self.mb_server.snapshot()["request_log"]
+            if path.startswith("/ws/2/artist/")
+        ]
+        self.assertGreater(len(artist_lookups), 0)
+
+    def test_scan_with_rate_limit_preserves_resume_state(self):
+        """A rate-limited scan keeps its resume state and can be retried."""
+        # setUp already used 2 requests (GET /me + playlist create). Reset so
+        # this test's quota applies to it alone: followed fetch (1), then
+        # album fetches. With quota=4 the album phase is interrupted after
+        # three artists -- after _plan_artists created in_progress.
+        self.spotify_server.reset_quota()
+        self.spotify_server.configure(daily_quota=4)
+        self.addCleanup(self.spotify_server.configure, daily_quota=None)
+        self.addCleanup(self.spotify_server.reset_quota)
+        with self._patch_mb_base_url():
+            result = core.run_scan(days=3650, interval_days=3, min_request_interval=0)
+        self.assertNotEqual(result["blocked_categories"], [])
+        self.assertIsNotNone(core.load_state().in_progress)
+
+    def test_second_scan_reclassifies_and_finds_releases(self):
+        """After a first scan, resetting artist history leads to a fresh
+        MB classification pass on the next scan."""
+        with self._patch_mb_base_url():
+            core.run_scan(days=3650, interval_days=3, min_request_interval=0)
+
+        # Reset artists and albums so everything is due again
+        core.save_state(core.models.State())
+
+        with self._patch_mb_base_url():
+            result = core.run_scan(days=3650, interval_days=3, min_request_interval=0)
+        self.assertEqual(result["status"], "ok")
+        state = core.load_state()
+        self.assertGreater(len(state.known_albums), 0)
+
+
+class AutoReorderIntegrationTests(unittest.TestCase):
+    """Integration tests for the auto-reorder feature after scans."""
+
+    num_artists = 5
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.ctx = make_context(Path(cls._tmp.name))
+        core.set_context(cls.ctx)
+        cls.server = MockSpotifyServer(num_artists=cls.num_artists)
+        cls.server.start()
+        cls._orig_api_base = cls.ctx.spotify_api_base
+        cls._orig_token_url = cls.ctx.spotify_token_url
+        cls.ctx.spotify_api_base = cls.server.base_url + "/v1"
+        cls.ctx.spotify_token_url = cls.server.base_url + "/token"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.ctx.spotify_api_base = cls._orig_api_base
+        cls.ctx.spotify_token_url = cls._orig_token_url
+        core.set_context(None)
+        cls.server.stop()
+        cls._tmp.cleanup()
+
+    def setUp(self):
+        self._classify_patcher = patch("spotify_core.scan._mb_classify_and_order",
+                                       side_effect=_passthrough_classify)
+        self._classify_patcher.start()
+        self.addCleanup(self._classify_patcher.stop)
+        self.config = write_config(self.ctx, {"min_request_interval": 0})
+        core.save_refresh_token("test_refresh")
+        with patch.object(core.auth, "get_access_token", return_value="mock-access-token"):
+            playlist_id = core.create_playlist("token", "Reorder Test")
+        write_config(self.ctx, {"min_request_interval": 0, "spotify_playlist_id": playlist_id})
+
+    def tearDown(self):
+        if self.ctx.store.state_file.exists():
+            self.ctx.store.state_file.unlink()
+
+    def test_auto_reorder_sorts_out_of_order_albums(self):
+        """When albums are added out of release-date order, the auto-reorder
+        should sort them oldest-first."""
+        # Configure artists with different release dates (all within lookback)
+        self.server.configure(artist_release_dates={
+            "a000000000000000000000": "2026-07-01",
+            "a000000000000000000001": "2026-08-01",
+            "a000000000000000000002": "2026-01-01",
+            "a000000000000000000003": "2026-04-01",
+            "a000000000000000000004": "2026-09-01",
+        })
+        result = core.run_scan(days=3650, interval_days=3, min_request_interval=0)
+        self.assertEqual(result["status"], "ok")
+
+        # Verify auto-reorder was triggered
+        logs = core.get_recent_logs()
+        self.assertTrue(any("Playlist order drifted" in l for l in logs))
+
+        # Check playlist contents are in release-date order
+        playlist_id = self.config["spotify_playlist_id"]
+        from spotify_core.playlists import get_playlist_track_uris
+        uris = get_playlist_track_uris(self.ctx, "mock-access-token", playlist_id, core.load_state())
+        self.assertGreater(len(uris), 0)
+
+        # The oldest album (a2, 2026-01-01) should come before the newest
+        # Find which artist IDs appear in the playlist
+        artist_ids_in_order = []
+        seen = set()
+        for uri in uris:
+            # Extract artist ID from URI like "spotify:track:album_a000000000000000000002_000_00"
+            parts = uri.split("_")
+            for i, part in enumerate(parts):
+                if part == "album" and i + 1 < len(parts):
+                    album_id = parts[i + 1]
+                    # album_id is like "a000000000000000000002"
+                    if album_id not in seen:
+                        seen.add(album_id)
+                        artist_ids_in_order.append(album_id)
+                    break
+
+        # a2 (2026-01-01) should appear before a4 (2026-09-01) in the playlist
+        if "a000000000000000000002" in artist_ids_in_order and "a000000000000000000004" in artist_ids_in_order:
+            idx_a2 = artist_ids_in_order.index("a000000000000000000002")
+            idx_a4 = artist_ids_in_order.index("a000000000000000000004")
+            self.assertLess(idx_a2, idx_a4)
+
+    def test_auto_reorder_skipped_when_no_new_albums(self):
+        """When no albums are added, auto-reorder should not be triggered."""
+        # First scan to populate state
+        self.server.configure(artist_release_dates={
+            "a000000000000000000001": "2026-07-01",
+        })
+        core.run_scan(days=3650, interval_days=3, min_request_interval=0)
+
+        # Second scan with interval=0 but same artists (no new albums)
+        log_before = len(core.get_recent_logs())
+        result = core.run_scan(days=3650, interval_days=0, min_request_interval=0)
+        log_after = len(core.get_recent_logs())
+
+        # No "reordering" log should appear
+        new_logs = core.get_recent_logs()[log_before:log_after]
+        reorder_logs = [l for l in new_logs if "reordering" in l.lower()]
+        self.assertEqual(len(reorder_logs), 0)
 
 
 if __name__ == "__main__":

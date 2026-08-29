@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from spotify_core.musicbrainz import (
     get_artist_active,
     get_artist_release_groups,
+    get_albums_in_window,
     get_albums_with_future_dates,
     mb_request,
     resolve_spotify_to_mb,
@@ -49,8 +50,9 @@ class MbRequestTests(unittest.TestCase):
         self.assertIn("SpotifyRecentlyReleasedAlbums", headers["User-Agent"])
 
     @patch("spotify_core.musicbrainz._rate_limit")
+    @patch("spotify_core.musicbrainz.time.sleep")
     @patch("spotify_core.musicbrainz.requests.get")
-    def test_retries_on_503_then_succeeds(self, mock_get, mock_rl):
+    def test_retries_on_503_then_succeeds(self, mock_get, mock_sleep, mock_rl):
         mock_get.side_effect = [
             _mock_response(503, headers={"Retry-After": "0"}),
             _mock_response(200, {"ok": True}),
@@ -58,6 +60,29 @@ class MbRequestTests(unittest.TestCase):
         result = mb_request("https://example.com/api")
         self.assertEqual(result, {"ok": True})
         self.assertEqual(mock_get.call_count, 2)
+
+    @patch("spotify_core.musicbrainz._rate_limit")
+    @patch("spotify_core.musicbrainz.time.sleep")
+    @patch("spotify_core.musicbrainz.requests.get")
+    def test_waits_for_backoff_when_retry_after_is_zero(self, mock_get, mock_sleep, mock_rl):
+        mock_get.return_value = _mock_response(503, headers={"Retry-After": "0"})
+        result = mb_request("https://example.com/api")
+        self.assertIsNone(result)
+        self.assertEqual(mock_get.call_count, 3)
+        for call in mock_sleep.call_args_list:
+            self.assertGreaterEqual(call[0][0], 1.0)
+
+    @patch("spotify_core.musicbrainz._rate_limit")
+    @patch("spotify_core.musicbrainz.time.sleep")
+    @patch("spotify_core.musicbrainz.requests.get")
+    def test_respects_retry_after(self, mock_get, mock_sleep, mock_rl):
+        mock_get.side_effect = [
+            _mock_response(503, headers={"Retry-After": "7"}),
+            _mock_response(200, {"ok": True}),
+        ]
+        result = mb_request("https://example.com/api")
+        self.assertEqual(result, {"ok": True})
+        self.assertGreaterEqual(mock_sleep.call_args_list[0][0][0], 7.0)
 
     @patch("spotify_core.musicbrainz._rate_limit")
     @patch("spotify_core.musicbrainz.time.sleep")
@@ -177,6 +202,25 @@ class GetArtistReleaseGroupsTests(unittest.TestCase):
         result = get_artist_release_groups(None, "mb-123")
         self.assertEqual(result, [])
 
+    @patch("spotify_core.musicbrainz._rate_limit")
+    @patch("spotify_core.musicbrainz.requests.get")
+    def test_paginates_with_offset(self, mock_get, mock_rl):
+        mock_get.side_effect = [
+            _mock_response(200, {"release-groups": [
+                {"id": f"rg{i}", "title": f"A{i}", "primary-type": "Album",
+                 "first-release-date": "2020-01-01"} for i in range(100)]}),
+            _mock_response(200, {"release-groups": [
+                {"id": "rg-extra", "title": "Extra", "primary-type": "Album",
+                 "first-release-date": "2020-01-01"}]}),
+        ]
+        result = get_artist_release_groups(None, "mb-123")
+        self.assertEqual(len(result), 101)
+        offsets = [
+            call.kwargs["params"]["offset"]
+            for call in mock_get.call_args_list
+        ]
+        self.assertEqual(offsets, [0, 100])
+
 
 class GetArtistActiveTests(unittest.TestCase):
 
@@ -259,6 +303,118 @@ class GetAlbumsWithFutureDatesTests(unittest.TestCase):
             ],
         })
         result = get_albums_with_future_dates(None, "mb-123")
+        self.assertEqual(result, [])
+
+
+class GetAlbumsInWindowTests(unittest.TestCase):
+
+    @patch("spotify_core.musicbrainz._rate_limit")
+    @patch("spotify_core.musicbrainz.requests.get")
+    def test_returns_only_dates_within_window(self, mock_get, mock_rl):
+        from datetime import datetime, timedelta
+        today = datetime.now()
+        recent = (today - timedelta(days=30)).strftime("%Y-%m-%d")
+        old = (today - timedelta(days=400)).strftime("%Y-%m-%d")
+        future = (today + timedelta(days=30)).strftime("%Y-%m-%d")
+        mock_get.return_value = _mock_response(200, {
+            "release-groups": [
+                {"id": "rg1", "title": "In Window", "primary-type": "Album",
+                 "first-release-date": recent},
+                {"id": "rg2", "title": "Too Old", "primary-type": "Album",
+                 "first-release-date": old},
+                {"id": "rg3", "title": "Future", "primary-type": "Album",
+                 "first-release-date": future},
+            ],
+        })
+        result = get_albums_in_window(None, "mb-123", 365)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["id"], "rg1")
+
+    @patch("spotify_core.musicbrainz._rate_limit")
+    @patch("spotify_core.musicbrainz.requests.get")
+    def test_excludes_future_dates(self, mock_get, mock_rl):
+        from datetime import datetime, timedelta
+        future = (datetime.now() + timedelta(days=10)).strftime("%Y-%m-%d")
+        mock_get.return_value = _mock_response(200, {
+            "release-groups": [
+                {"id": "rg1", "title": "Future", "primary-type": "Album",
+                 "first-release-date": future},
+            ],
+        })
+        result = get_albums_in_window(None, "mb-123", 365)
+        self.assertEqual(result, [])
+
+    @patch("spotify_core.musicbrainz._rate_limit")
+    @patch("spotify_core.musicbrainz.requests.get")
+    def test_excludes_dates_older_than_window(self, mock_get, mock_rl):
+        from datetime import datetime, timedelta
+        old = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
+        mock_get.return_value = _mock_response(200, {
+            "release-groups": [
+                {"id": "rg1", "title": "Old", "primary-type": "Album",
+                 "first-release-date": old},
+            ],
+        })
+        result = get_albums_in_window(None, "mb-123", 365)
+        self.assertEqual(result, [])
+
+    @patch("spotify_core.musicbrainz._rate_limit")
+    @patch("spotify_core.musicbrainz.requests.get")
+    def test_handles_year_precision_dates(self, mock_get, mock_rl):
+        from datetime import datetime, timedelta
+        this_year = str(datetime.now().year)
+        last_year = str(datetime.now().year - 1)
+        mock_get.return_value = _mock_response(200, {
+            "release-groups": [
+                {"id": "rg1", "title": "This Year", "primary-type": "Album",
+                 "first-release-date": this_year},
+                {"id": "rg2", "title": "Last Year", "primary-type": "Album",
+                 "first-release-date": last_year},
+            ],
+        })
+        result = get_albums_in_window(None, "mb-123", 365)
+        rg_ids = [r["id"] for r in result]
+        self.assertIn("rg1", rg_ids)
+
+    @patch("spotify_core.musicbrainz._rate_limit")
+    @patch("spotify_core.musicbrainz.requests.get")
+    def test_handles_year_month_precision_dates(self, mock_get, mock_rl):
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        this_month = now.strftime("%Y-%m")
+        mock_get.return_value = _mock_response(200, {
+            "release-groups": [
+                {"id": "rg1", "title": "This Month", "primary-type": "Album",
+                 "first-release-date": this_month},
+            ],
+        })
+        result = get_albums_in_window(None, "mb-123", 365)
+        self.assertEqual(len(result), 1)
+
+    @patch("spotify_core.musicbrainz._rate_limit")
+    @patch("spotify_core.musicbrainz.requests.get")
+    def test_returns_empty_on_none_response(self, mock_get, mock_rl):
+        mock_get.return_value = _mock_response(200, None)
+        result = get_albums_in_window(None, "mb-123", 365)
+        self.assertEqual(result, [])
+
+    @patch("spotify_core.musicbrainz._rate_limit")
+    @patch("spotify_core.musicbrainz.requests.get")
+    def test_returns_empty_on_empty_release_groups(self, mock_get, mock_rl):
+        mock_get.return_value = _mock_response(200, {"release-groups": []})
+        result = get_albums_in_window(None, "mb-123", 365)
+        self.assertEqual(result, [])
+
+    @patch("spotify_core.musicbrainz._rate_limit")
+    @patch("spotify_core.musicbrainz.requests.get")
+    def test_skips_empty_release_date(self, mock_get, mock_rl):
+        mock_get.return_value = _mock_response(200, {
+            "release-groups": [
+                {"id": "rg1", "title": "Unknown", "primary-type": "Album",
+                 "first-release-date": ""},
+            ],
+        })
+        result = get_albums_in_window(None, "mb-123", 365)
         self.assertEqual(result, [])
 
 

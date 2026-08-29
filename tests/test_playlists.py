@@ -229,5 +229,98 @@ class ApplyAlbumOverrideTests(ContextTestCase):
         self.assertEqual(entry.track_uris, ["spotify:track:a"])
 
 
+class PlaylistOrderIsStaleTests(ContextTestCase):
+    """Tests for playlist_order_is_stale."""
+
+    def test_returns_false_when_order_matches(self):
+        state = State(known_albums={
+            "a1": make_album("a1", "Old", "2026-01-01", added=True,
+                             track_uris=["old-1", "old-2"]),
+            "a2": make_album("a2", "New", "2026-06-01", added=True,
+                             track_uris=["new-1", "new-2"]),
+        })
+        # Current order matches release-date order (oldest first)
+        with patch.object(core.playlists, "get_playlist_track_uris",
+                          return_value=["old-1", "old-2", "new-1", "new-2"]):
+            result = core.playlists.playlist_order_is_stale(
+                self.ctx, "token", state, "playlist")
+        self.assertFalse(result)
+
+    def test_returns_true_when_tracks_swapped(self):
+        state = State(known_albums={
+            "a1": make_album("a1", "Old", "2026-01-01", added=True,
+                             track_uris=["old-1"]),
+            "a2": make_album("a2", "New", "2026-06-01", added=True,
+                             track_uris=["new-1"]),
+        })
+        # Current order has new before old (wrong)
+        with patch.object(core.playlists, "get_playlist_track_uris",
+                          return_value=["new-1", "old-1"]):
+            result = core.playlists.playlist_order_is_stale(
+                self.ctx, "token", state, "playlist")
+        self.assertTrue(result)
+
+    def test_returns_true_when_tracks_within_album_swapped(self):
+        state = State(known_albums={
+            "a1": make_album("a1", "Album", "2026-01-01", added=True,
+                             track_uris=["a-1", "a-2"]),
+        })
+        with patch.object(core.playlists, "get_playlist_track_uris",
+                          return_value=["a-2", "a-1"]):
+            result = core.playlists.playlist_order_is_stale(
+                self.ctx, "token", state, "playlist")
+        self.assertTrue(result)
+
+    def test_returns_true_when_seen_album_is_missing_tracks(self):
+        state = State(known_albums={
+            "a1": make_album("a1", "Album", "2026-01-01", added=True,
+                             track_uris=["a-1", "a-2"]),
+        })
+        with patch.object(core.playlists, "get_playlist_track_uris",
+                          return_value=["a-1"]):
+            result = core.playlists.playlist_order_is_stale(
+                self.ctx, "token", state, "playlist")
+        self.assertTrue(result)
+
+    def test_ignores_stray_uris(self):
+        state = State(known_albums={
+            "a1": make_album("a1", "Album", "2026-01-01", added=True,
+                             track_uris=["a-1"]),
+        })
+        # Stray URI "external-track" is not in any known album
+        with patch.object(core.playlists, "get_playlist_track_uris",
+                          return_value=["a-1", "external-track"]):
+            result = core.playlists.playlist_order_is_stale(
+                self.ctx, "token", state, "playlist")
+        self.assertFalse(result)
+
+    def test_ignores_missing_albums_in_playlist(self):
+        state = State(known_albums={
+            "a1": make_album("a1", "Album1", "2026-01-01", added=True,
+                             track_uris=["a1-1"]),
+            "a2": make_album("a2", "Album2", "2026-06-01", added=True,
+                             track_uris=["a2-1"]),
+        })
+        # a2 is not in the playlist currently
+        with patch.object(core.playlists, "get_playlist_track_uris",
+                          return_value=["a1-1"]):
+            result = core.playlists.playlist_order_is_stale(
+                self.ctx, "token", state, "playlist")
+        self.assertFalse(result)
+
+    def test_excluded_albums_not_in_either_sequence(self):
+        state = State(known_albums={
+            "a1": make_album("a1", "Normal", "2026-01-01", added=True,
+                             track_uris=["n-1"]),
+            "a2": make_album("a2", "Excluded (Live)", "2026-06-01", added=True,
+                             track_uris=["e-1"], manual_override=True),
+        })
+        with patch.object(core.playlists, "get_playlist_track_uris",
+                          return_value=["n-1"]):
+            result = core.playlists.playlist_order_is_stale(
+                self.ctx, "token", state, "playlist")
+        self.assertFalse(result)
+
+
 if __name__ == "__main__":
     unittest.main()

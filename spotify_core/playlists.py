@@ -141,6 +141,33 @@ def reorder_playlist(ctx, token, state, playlist_id):
     log("Playlist reorder complete.")
 
 
+def playlist_order_is_stale(ctx, token, state, playlist_id):
+    """True if the playlist's current track order doesn't match the
+    canonical release-date order reorder_playlist would produce.
+    Read-only: one GET, no writes."""
+    albums = [
+        a for a in state.known_albums.values()
+        if a.added_to_playlist and not is_effectively_excluded(a)
+    ]
+
+    def sort_key(album):
+        parsed = parse_release_date(album.release_date)
+        return parsed if parsed is not None else datetime.min
+
+    current_uris = get_playlist_track_uris(ctx, token, playlist_id, state)
+    known_uris = {uri for album in albums for uri in (album.track_uris or [])}
+    observed_uris = [uri for uri in current_uris if uri in known_uris]
+    seen_uris = set(observed_uris)
+
+    expected_uris = []
+    for album in sorted(albums, key=sort_key):
+        album_uris = album.track_uris or []
+        if any(uri in seen_uris for uri in album_uris):
+            expected_uris.extend(album_uris)
+
+    return observed_uris != expected_uris
+
+
 def create_playlist(ctx, token, name, description=None):
     """Creates a private playlist for the authenticated user and returns
     its Spotify ID."""

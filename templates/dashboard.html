@@ -193,7 +193,9 @@
 
       var type = 'info';
       var lower = message.toLowerCase();
-      if (/error|fail|exception|rate.limit|denied/.test(lower)) {
+      if (/rate limiter: waiting/.test(lower)) {
+        type = 'info';
+      } else if (/error|fail|exception|rate.limit|denied|\b5\d\d\b/.test(lower)) {
         type = 'error';
       } else if (/warn|warning/.test(lower)) {
         type = 'warn';

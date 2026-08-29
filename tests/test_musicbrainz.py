@@ -50,8 +50,9 @@ class MbRequestTests(unittest.TestCase):
         self.assertIn("SpotifyRecentlyReleasedAlbums", headers["User-Agent"])
 
     @patch("spotify_core.musicbrainz._rate_limit")
+    @patch("spotify_core.musicbrainz.time.sleep")
     @patch("spotify_core.musicbrainz.requests.get")
-    def test_retries_on_503_then_succeeds(self, mock_get, mock_rl):
+    def test_retries_on_503_then_succeeds(self, mock_get, mock_sleep, mock_rl):
         mock_get.side_effect = [
             _mock_response(503, headers={"Retry-After": "0"}),
             _mock_response(200, {"ok": True}),
@@ -59,6 +60,29 @@ class MbRequestTests(unittest.TestCase):
         result = mb_request("https://example.com/api")
         self.assertEqual(result, {"ok": True})
         self.assertEqual(mock_get.call_count, 2)
+
+    @patch("spotify_core.musicbrainz._rate_limit")
+    @patch("spotify_core.musicbrainz.time.sleep")
+    @patch("spotify_core.musicbrainz.requests.get")
+    def test_waits_for_backoff_when_retry_after_is_zero(self, mock_get, mock_sleep, mock_rl):
+        mock_get.return_value = _mock_response(503, headers={"Retry-After": "0"})
+        result = mb_request("https://example.com/api")
+        self.assertIsNone(result)
+        self.assertEqual(mock_get.call_count, 3)
+        for call in mock_sleep.call_args_list:
+            self.assertGreaterEqual(call[0][0], 1.0)
+
+    @patch("spotify_core.musicbrainz._rate_limit")
+    @patch("spotify_core.musicbrainz.time.sleep")
+    @patch("spotify_core.musicbrainz.requests.get")
+    def test_respects_retry_after(self, mock_get, mock_sleep, mock_rl):
+        mock_get.side_effect = [
+            _mock_response(503, headers={"Retry-After": "7"}),
+            _mock_response(200, {"ok": True}),
+        ]
+        result = mb_request("https://example.com/api")
+        self.assertEqual(result, {"ok": True})
+        self.assertGreaterEqual(mock_sleep.call_args_list[0][0][0], 7.0)
 
     @patch("spotify_core.musicbrainz._rate_limit")
     @patch("spotify_core.musicbrainz.time.sleep")
@@ -177,6 +201,25 @@ class GetArtistReleaseGroupsTests(unittest.TestCase):
         mock_get.return_value = _mock_response(200, {"release-groups": []})
         result = get_artist_release_groups(None, "mb-123")
         self.assertEqual(result, [])
+
+    @patch("spotify_core.musicbrainz._rate_limit")
+    @patch("spotify_core.musicbrainz.requests.get")
+    def test_paginates_with_offset(self, mock_get, mock_rl):
+        mock_get.side_effect = [
+            _mock_response(200, {"release-groups": [
+                {"id": f"rg{i}", "title": f"A{i}", "primary-type": "Album",
+                 "first-release-date": "2020-01-01"} for i in range(100)]}),
+            _mock_response(200, {"release-groups": [
+                {"id": "rg-extra", "title": "Extra", "primary-type": "Album",
+                 "first-release-date": "2020-01-01"}]}),
+        ]
+        result = get_artist_release_groups(None, "mb-123")
+        self.assertEqual(len(result), 101)
+        offsets = [
+            call.kwargs["params"]["offset"]
+            for call in mock_get.call_args_list
+        ]
+        self.assertEqual(offsets, [0, 100])
 
 
 class GetArtistActiveTests(unittest.TestCase):

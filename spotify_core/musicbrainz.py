@@ -10,9 +10,12 @@ import requests
 from .filters import parse_release_date
 from .logging import log
 
-# MusicBrainz requires 1 request/second minimum interval per source IP
-_MIN_INTERVAL = 1.0
-_JITTER_SECONDS = 0.5
+# MusicBrainz requires 1 request/second minimum interval per source IP. We
+# keep a little headroom above that hard ceiling -- it runs on a shared IP
+# in Docker and its burst tolerance is only 1, so sitting right at 1.0s
+# invites 503s. _JITTER_SECONDS also de-correlates from the exact boundary.
+_MIN_INTERVAL = 1.2
+_JITTER_SECONDS = 0.6
 _MB_RETRIES = 3
 
 # Serializes pacing and the shared ``_last_request_time`` so concurrent

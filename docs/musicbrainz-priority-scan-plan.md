@@ -213,8 +213,16 @@ If the classifier ordered any real (non-skipped) hits it logs
   error, so even a hard MB outage just means "classify everything as
   normal".
 - MB calls run at the module's existing `_rate_limit()` pace
-  (1 req/sec). The early-stop budget (section 3) bounds MB traffic on
-  oversized batches.
+  (~1.2-1.8 req/sec, headroom above MusicBrainz's hard 1/sec ceiling to
+  avoid 503s when running on a shared Docker IP; see `_MIN_INTERVAL` /
+  `_JITTER_SECONDS` in `musicbrainz.py`). The early-stop budget
+  (section 3) bounds MB traffic on oversized batches.
+- Each successful status/release-group call is logged per artist
+  (`MB: {name} - active=..., N album release-group(s)`), the resulting
+  classification is logged (`hit in window` / `is inactive` / `only
+  upcoming releases`), and one summary line closes the pass
+  (`MB: classified X/N artist(s) (Y newly resolved, Z skipped, W hit(s)).`)
+  so the batch outcome is visible in the dashboard / docker logs.
 - A `RateLimitError` from Spotify *during* the reordered loop behaves
   exactly as before: the run stops, `state.in_progress` (with the new
   ordering + `processed_ids` so far) is left in place, and resume picks up

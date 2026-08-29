@@ -226,6 +226,8 @@ def _mb_classify_and_order(ctx, state, artists, days_lookback, total_count, inte
     now = datetime.now()
     cutoff = now - timedelta(days=days_lookback)
     now_utc_iso = datetime.now(timezone.utc).isoformat()
+    classified = 0
+    resolved = 0
 
     for artist in artists:
         artist_id = artist["id"]
@@ -239,9 +241,11 @@ def _mb_classify_and_order(ctx, state, artists, days_lookback, total_count, inte
                 entry = Artist(id=artist_id, name=artist["name"])
                 state.artists[artist_id] = entry
             entry.musicbrainz_id = mbid
+            resolved += 1
 
         # Inactive verdict still fresh -> skip without any MB call.
         if not entry.mb_active and entry.mb_active_checked and _active_check_is_fresh(entry):
+            log(f"MB: {artist['name']} - inactive (cached, fresh) -- skipped")
             skip.add(artist_id)
             continue
 
@@ -253,6 +257,8 @@ def _mb_classify_and_order(ctx, state, artists, days_lookback, total_count, inte
 
         entry.mb_active = active
         entry.mb_active_checked = now_utc_iso
+        classified += 1
+        log(f"MB: {artist['name']} - active={active}, {len(release_groups)} album release-group(s)")
 
         if not active:
             log(f"MB: {artist['name']} is inactive -- skipping")
@@ -281,6 +287,8 @@ def _mb_classify_and_order(ctx, state, artists, days_lookback, total_count, inte
                 release_times.append(rg_date)
 
         if release_times:
+            earliest = min(release_times).strftime("%Y-%m-%d")
+            log(f"MB: {artist['name']} - hit in window (earliest {earliest}, {len(release_times)} in-window)")
             hits.append((min(release_times), artist_id))
             hits_seen.add(artist_id)
             # Once enough hits are known for this batch, stop querying MB
@@ -291,6 +299,8 @@ def _mb_classify_and_order(ctx, state, artists, days_lookback, total_count, inte
             log(f"MB: {artist['name']} has only upcoming releases -- skipping")
             skip.add(artist_id)
 
+    log(f"MB: classified {classified}/{len(artists)} artist(s) "
+        f"({resolved} newly resolved, {len(skip)} skipped, {len(hits_seen)} hit(s)).")
     hits.sort(key=lambda h: h[0])
     ordered_ids = [aid for _, aid in hits]
     ordered_ids += [a["id"] for a in artists if a["id"] not in hits_seen]

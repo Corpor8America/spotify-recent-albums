@@ -200,7 +200,11 @@ class AppRoutesTests(ContextTestCase):
         core.save_state(State(in_progress=ScanProgress(due_ids=["a1"], processed_ids=["a2"])))
         response = self.client.get("/status")
         data = json.loads(response.data)
-        self.assertEqual(data["in_progress"], {"due_ids": ["a1"], "processed_ids": ["a2"]})
+        self.assertEqual(data["in_progress"], {
+            "due_ids": ["a1"],
+            "processed_ids": ["a2"],
+            "playlist_track_uris": None,
+        })
 
     # --- health endpoints ----------------------------------------------------
 

@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import spotify_core as core
 from spotify_core.models import State
@@ -21,7 +21,7 @@ class AddTracksIdempotencyTests(ContextTestCase):
             "POST",
             "token",
             "https://api.spotify.com/v1/playlists/playlist/items",
-            unittest.mock.ANY,
+            ANY,
             json_data={"uris": ["spotify:track:new"]},
         )
 

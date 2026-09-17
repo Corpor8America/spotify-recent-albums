@@ -7,7 +7,8 @@ versions of the app wrote, so existing state files remain readable:
     {
       "artists": {"<artist_id>": {"name", "last_checked", "scanned_with"}},
       "known_albums": {"<album_id>": {...album fields...}},
-      "in_progress": null | {"due_ids": [...], "processed_ids": [...]},
+      "in_progress": null | {"due_ids": [...], "processed_ids": [...],
+                              "playlist_track_uris": [...]},
       "rate_limits": {"<category>": <unix ts>}
     }
 
@@ -147,16 +148,31 @@ class MusicBrainzAlbum:
 class ScanProgress:
     due_ids: list = field(default_factory=list)
     processed_ids: list = field(default_factory=list)
+    # Playlist snapshot used for deduplication during this scan. It is
+    # persisted so a rate-limit interruption can resume without fetching the
+    # same playlist again. It disappears when in_progress is cleared.
+    playlist_track_uris: Optional[list] = None
 
     @classmethod
     def from_dict(cls, d):
         return cls(
             due_ids=list(d.get("due_ids") or []),
             processed_ids=list(d.get("processed_ids") or []),
+            playlist_track_uris=(
+                list(d["playlist_track_uris"])
+                if d.get("playlist_track_uris") is not None else None
+            ),
         )
 
     def to_dict(self):
-        return {"due_ids": list(self.due_ids), "processed_ids": list(self.processed_ids)}
+        return {
+            "due_ids": list(self.due_ids),
+            "processed_ids": list(self.processed_ids),
+            "playlist_track_uris": (
+                list(self.playlist_track_uris)
+                if self.playlist_track_uris is not None else None
+            ),
+        }
 
 
 @dataclass

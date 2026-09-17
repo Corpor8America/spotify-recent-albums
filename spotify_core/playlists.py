@@ -48,9 +48,34 @@ def get_playlist_track_uris(ctx, token, playlist_id, state):
 
 
 def add_tracks_to_playlist(ctx, token, playlist_id, track_uris, state):
+    """Add tracks that are not already present in the target playlist.
+
+    The playlist itself is the source of truth for deduplication. This is
+    important after the local state is lost or rebuilt: ``added_to_playlist``
+    in the local state is only a cache and cannot safely determine whether a
+    track is already in the external playlist.
+    """
+    if not track_uris:
+        return []
+
+    existing_uris = set(get_playlist_track_uris(ctx, token, playlist_id, state))
+    # Preserve the caller's order while also avoiding duplicate URIs in the
+    # same add request.
+    to_add = []
+    seen = set()
+    for uri in track_uris:
+        if uri not in existing_uris and uri not in seen:
+            to_add.append(uri)
+            seen.add(uri)
+
+    if not to_add:
+        log(f"No new tracks to add to playlist {playlist_id}; all requested tracks already exist.")
+        return []
+
     url = f"{ctx.spotify_api_base}/playlists/{playlist_id}/items"
-    for i in range(0, len(track_uris), 100):
-        spotify_request(ctx, "POST", token, url, state, json_data={"uris": track_uris[i:i + 100]})
+    for i in range(0, len(to_add), 100):
+        spotify_request(ctx, "POST", token, url, state, json_data={"uris": to_add[i:i + 100]})
+    return to_add
 
 
 def remove_tracks_from_playlist(ctx, token, playlist_id, track_uris, state):

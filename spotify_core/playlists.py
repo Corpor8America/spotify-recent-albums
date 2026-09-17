@@ -50,15 +50,30 @@ def get_playlist_track_uris(ctx, token, playlist_id, state):
 def add_tracks_to_playlist(ctx, token, playlist_id, track_uris, state):
     """Add tracks that are not already present in the target playlist.
 
-    The playlist itself is the source of truth for deduplication. This is
-    important after the local state is lost or rebuilt: ``added_to_playlist``
-    in the local state is only a cache and cannot safely determine whether a
-    track is already in the external playlist.
+    The playlist itself is the source of truth for deduplication. During a
+    scan, the first add loads one playlist snapshot into ``state.in_progress``
+    and every later add reuses and updates that snapshot. Because in-progress
+    state is persisted, a rate-limit interruption can resume hours later
+    without re-reading the playlist. The snapshot disappears when the scan
+    clears ``in_progress`` at successful completion.
     """
     if not track_uris:
         return []
 
-    existing_uris = set(get_playlist_track_uris(ctx, token, playlist_id, state))
+    in_progress = state.in_progress
+    if in_progress is not None:
+        if in_progress.playlist_track_uris is None:
+            existing_uris = set(get_playlist_track_uris(ctx, token, playlist_id, state))
+            in_progress.playlist_track_uris = list(existing_uris)
+            state_mod.save_state(ctx, state)
+            log(f"Loaded playlist {playlist_id} once for this scan ({len(existing_uris)} track(s)).")
+        else:
+            existing_uris = set(in_progress.playlist_track_uris)
+    else:
+        # Calls outside a scan (manual overrides, reorder, etc.) still read
+        # Spotify directly so those operations always see the current playlist.
+        existing_uris = set(get_playlist_track_uris(ctx, token, playlist_id, state))
+
     # Preserve the caller's order while also avoiding duplicate URIs in the
     # same add request.
     to_add = []
@@ -75,6 +90,12 @@ def add_tracks_to_playlist(ctx, token, playlist_id, track_uris, state):
     url = f"{ctx.spotify_api_base}/playlists/{playlist_id}/items"
     for i in range(0, len(to_add), 100):
         spotify_request(ctx, "POST", token, url, state, json_data={"uris": to_add[i:i + 100]})
+
+    if in_progress is not None:
+        # Keep the persisted snapshot authoritative for the rest of this scan.
+        existing_uris.update(to_add)
+        in_progress.playlist_track_uris = list(existing_uris)
+        state_mod.save_state(ctx, state)
     return to_add
 
 

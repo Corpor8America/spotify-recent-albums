@@ -33,11 +33,12 @@ def get_report_albums(state, days):
         )
         mb_albums.append(mb_album)
 
-    # Combine: MB albums first, then Spotify albums sorted by date
+    # Combine: MB albums first (soonest upcoming first), then Spotify albums sorted by date
     def _sort_key(a):
         d = parse_release_date(a.release_date)
         return d if d is not None else datetime.min
 
+    mb_albums.sort(key=_sort_key)
     result.sort(key=_sort_key, reverse=True)
     return mb_albums + result
 

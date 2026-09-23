@@ -13,6 +13,7 @@ import json
 import logging
 import sys
 import threading
+import traceback
 from datetime import datetime
 
 _logger = logging.getLogger("spotify_core")
@@ -59,6 +60,13 @@ def log(message, **fields):
     """Log an informational message; ``fields`` become structured context."""
     configure_logging()
     _logger.info(message, extra={"fields": fields})
+
+
+def log_exception(message, **fields):
+    """Log a message followed by the current exception traceback."""
+    configure_logging()
+    detail = f"{message}\n{traceback.format_exc()}"
+    _logger.error(detail, extra={"fields": fields})
 
 
 def get_recent_logs():

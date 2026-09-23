@@ -40,26 +40,49 @@ def get_artist_albums(ctx, token, artist_id, state, market="US"):
 
 
 def get_due_artists(artists, state, interval_days):
-    """Pick the artists due for a check. If none are overdue (small
-    libraries), fall back to the oldest-checked batch so every artist is
-    visited roughly once per interval."""
+    """Pick artists due for a Spotify check.
+
+    Artists with a future MusicBrainz release are deliberately deferred
+    until that release date is reached. Such artists may have an empty
+    ``last_checked`` because they have never needed a Spotify scan.
+    """
     now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+
+    deferred_ids = {
+        album.artist_id
+        for album in state.musicbrainz_upcoming.values()
+        if album.release_date > today
+    }
+
     due = []
+    checked = []
     for artist in artists:
-        entry = state.artists.get(artist["id"])
+        artist_id = artist["id"]
+        if artist_id in deferred_ids:
+            continue
+
+        entry = state.artists.get(artist_id)
         if entry is None:
             due.append(artist)
             continue
+
+        # An empty last_checked is valid for an artist discovered by
+        # MusicBrainz but not yet checked by Spotify. If there is no
+        # future release deferring it, the artist needs a first Spotify scan.
+        if not entry.last_checked:
+            due.append(artist)
+            continue
+
         last_checked = datetime.fromisoformat(entry.last_checked)
         if now - last_checked >= timedelta(days=interval_days):
             due.append(artist)
-    if not due and artists:
-        checked = []
-        for artist in artists:
-            entry = state.artists.get(artist["id"])
-            if entry is not None:
-                checked.append((artist, datetime.fromisoformat(entry.last_checked)))
+        else:
+            checked.append((artist, last_checked))
+
+    if not due and checked:
         checked.sort(key=lambda x: x[1])
-        batch_size = max(1, len(artists) // max(1, interval_days))
+        batch_size = max(1, len(checked) // max(1, interval_days))
         due = [artist for artist, _ in checked[:min(len(checked), batch_size)]]
+
     return due

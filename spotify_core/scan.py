@@ -18,7 +18,7 @@ from .artists import get_artist_albums, get_due_artists, get_followed_artists
 from .auth import get_access_token, load_refresh_token
 from .config import CHECK_INTERVAL_DAYS, DEFAULT_DAYS_LOOKBACK, get_version, load_config
 from .filters import is_auto_excluded, is_effectively_excluded, parse_release_date
-from .logging import clear_logs, log
+from .logging import clear_logs, log, log_exception
 from .models import Album, Artist, MusicBrainzAlbum, ScanProgress
 from .musicbrainz import MB_ACTIVE_REFRESH_DAYS, get_artist_status_and_release_groups, resolve_spotify_to_mb
 from .playlists import add_tracks_to_playlist, get_album_track_uris, playlist_order_is_stale, prune_playlist, reorder_playlist
@@ -70,7 +70,14 @@ def start_scan(ctx, days=None, interval_days=None, min_request_interval=None, ma
                 update_state(ctx, _clear)
             except Exception:
                 pass
-            log(f"Background scan crashed: {exc!r}")
+            try:
+                verbose = load_config(ctx).get("verbose_logging", False)
+            except Exception:
+                verbose = False
+            if verbose:
+                log_exception("Background scan crashed with traceback:")
+            else:
+                log(f"Background scan crashed: {exc!r}")
 
     threading.Thread(target=_thread_main, daemon=True).start()
     return True
@@ -109,6 +116,9 @@ def run_scan(ctx, days=None, interval_days=None, min_request_interval=None, mark
 
     try:
         cfg = load_config(ctx)
+        verbose = cfg.get("verbose_logging", False)
+        if verbose:
+            log("Verbose logging enabled.")
         days = days or cfg.get("days_lookback", DEFAULT_DAYS_LOOKBACK)
         interval_days = interval_days or cfg.get("interval_days", CHECK_INTERVAL_DAYS)
         ctx.rate_limiter.min_interval_seconds = (
@@ -132,6 +142,8 @@ def run_scan(ctx, days=None, interval_days=None, min_request_interval=None, mark
         artists = _fetch_followed_artists(ctx, token, state, blocked_categories)
         any_new_albums = False
         if artists:
+            if verbose:
+                log("Phase: planning artists.")
             plan = _plan_artists(
                 ctx,
                 state,
@@ -143,8 +155,12 @@ def run_scan(ctx, days=None, interval_days=None, min_request_interval=None, mark
             )
             if plan is not None:
                 due_artists, processed_ids, skip_ids = plan
+                if verbose:
+                    log(f"Phase: artist plan ready ({len(due_artists)} due, {len(skip_ids)} MB-skipped).")
                 if skip_ids:
                     log(f"MB: skipping {len(skip_ids)} artist(s) (inactive or future-only).")
+                if verbose:
+                    log("Phase: processing artists.")
                 any_new_albums = _process_artists(
                     ctx,
                     token,
@@ -156,8 +172,12 @@ def run_scan(ctx, days=None, interval_days=None, min_request_interval=None, mark
                     blocked_categories,
                 )
 
+        if verbose:
+            log("Phase: finalizing scan.")
         _finalize_progress(ctx, state, blocked_categories)
         _prune_safely(ctx, token, state, days, playlist_id, blocked_categories)
+        if verbose:
+            log("Phase: auto-reorder check.")
         _maybe_auto_reorder(ctx, token, state, playlist_id, blocked_categories, any_new_albums)
 
         log("Scan finished." + (f" Blocked categories: {blocked_categories}" if blocked_categories else ""))

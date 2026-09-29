@@ -4,7 +4,7 @@ import stat
 import unittest
 
 import spotify_core as core
-from spotify_core.models import Artist, ScanProgress, State
+from spotify_core.models import Artist, MusicBrainzAlbum, ScanProgress, State
 from tests.support import ContextTestCase
 
 
@@ -37,15 +37,36 @@ class StateFileTests(ContextTestCase):
         self.assertEqual(loaded.artists["a1"].name, "Test")
         self.assertEqual(loaded.artists["a1"].last_checked, "2026-01-01T00:00:00")
 
-    def test_roundtrip_matches_legacy_json_shape(self):
+    def test_musicbrainz_exclusion_roundtrip(self):
+        original = State(musicbrainz_upcoming={
+            "rg1": MusicBrainzAlbum(
+                "rg1", "Future Album", "Artist", "art1", "2099-01-01", "",
+                manual_excluded=True,
+            ),
+        })
+        core.save_state(original)
+        loaded = core.load_state()
+        self.assertTrue(loaded.musicbrainz_upcoming["rg1"].manual_excluded)
+
+    def test_roundtrip_json_shape(self):
         original = State(
             artists={"a1": Artist(id="a1", name="Test", last_checked="2026-01-01T00:00:00")},
             rate_limits={"GET /me/following": 123},
+            musicbrainz_upcoming={
+                "rg1": MusicBrainzAlbum(
+                    "rg1", "Future Album", "Artist", "a1", "2099-01-01", "",
+                    manual_excluded=True,
+                ),
+            },
         )
         core.save_state(original)
         raw = json.loads((self.tmp_path / "spotify-state.json").read_text())
-        self.assertEqual(set(raw.keys()), {"artists", "known_albums", "in_progress", "rate_limits", "musicbrainz_upcoming"})
+        self.assertEqual(set(raw.keys()), {
+            "artists", "known_albums", "in_progress", "rate_limits",
+            "musicbrainz_upcoming",
+        })
         self.assertEqual(set(raw["artists"]["a1"].keys()), {"name", "last_checked", "scanned_with", "musicbrainz_id", "mb_active", "mb_active_checked"})
+        self.assertTrue(raw["musicbrainz_upcoming"]["rg1"]["manual_excluded"])
 
     def test_clear_expired_rate_limits_removes_only_past_entries(self):
         state = State(rate_limits={"expired": 99, "future": 101})

@@ -41,6 +41,17 @@ class GetReportAlbumsTests(unittest.TestCase):
         result = get_report_albums(state, 365)
         self.assertEqual(result[0].id, "a1")
 
+    def test_musicbrainz_exclusion_is_exposed_to_report(self):
+        state = state_with()
+        state.musicbrainz_upcoming = {
+            "rg1": MusicBrainzAlbum(
+                "rg1", "Excluded Future", "Artist", "art1", "2099-01-01", "",
+                manual_excluded=True,
+            ),
+        }
+        result = get_report_albums(state, 365)
+        self.assertTrue(result[0].manual_override)
+
     def test_musicbrainz_upcoming_albums_sort_newest_first(self):
         state = state_with(
             make_album("sp1", "Spotify", "2026-09-01"),

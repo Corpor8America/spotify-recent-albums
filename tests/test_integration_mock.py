@@ -314,13 +314,215 @@ class PriorityScanIntegrationTests(unittest.TestCase):
             core.run_scan(days=3650, interval_days=3, min_request_interval=0)
 
         # Reset artists and albums so everything is due again
-        core.save_state(core.models.State())
+        core.save_state(core.State())
 
         with self._patch_mb_base_url():
             result = core.run_scan(days=3650, interval_days=3, min_request_interval=0)
         self.assertEqual(result["status"], "ok")
         state = core.load_state()
         self.assertGreater(len(state.known_albums), 0)
+
+
+class MusicBrainzPrereleaseExclusionE2ETests(unittest.TestCase):
+    """End-to-end lifecycle: MB upcoming -> UI exclusion -> Spotify release -> no playlist add."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.ctx = make_context(Path(cls._tmp.name))
+        core.set_context(cls.ctx)
+        cls.spotify_server = MockSpotifyServer(num_artists=1, albums_per_artist=1)
+        cls.mb_server = MockMusicBrainzServer()
+        cls.spotify_server.start()
+        cls.mb_server.start()
+        cls._orig_api_base = cls.ctx.spotify_api_base
+        cls._orig_token_url = cls.ctx.spotify_token_url
+        cls.ctx.spotify_api_base = cls.spotify_server.base_url + "/v1"
+        cls.ctx.spotify_token_url = cls.spotify_server.base_url + "/token"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.ctx.spotify_api_base = cls._orig_api_base
+        cls.ctx.spotify_token_url = cls._orig_token_url
+        core.set_context(None)
+        cls.spotify_server.stop()
+        cls.mb_server.stop()
+        cls._tmp.cleanup()
+
+    def setUp(self):
+        # This class reuses one server/context across both E2E tests; start
+        # each test from a clean persisted state so prior test exclusions
+        # cannot affect prerelease discovery.
+        if self.ctx.store.state_file.exists():
+            self.ctx.store.state_file.unlink()
+        write_config(self.ctx, {"min_request_interval": 0})
+        core.save_refresh_token("test_refresh")
+        with patch.object(core.auth, "get_access_token", return_value="mock-access-token"):
+            playlist_id = core.create_playlist("token", "Pre-release E2E")
+        write_config(self.ctx, {
+            "min_request_interval": 0,
+            "spotify_playlist_id": playlist_id,
+        })
+        self.client = create_app().test_client()
+        self.client.application.config["TESTING"] = True
+
+        self.spotify_server.configure(recent_release_date="2099-01-01")
+        self.mb_server.configure(
+            artist_mappings={"a000000000000000000000": "mb-e2e-artist"},
+            artist_catalog={
+                "mb-e2e-artist": {
+                    "name": "E2E Artist",
+                    "life_span": {"ended": False},
+                    "release-groups": [{
+                        "id": "rg-e2e",
+                        "title": "Album 0 by Artist 0",
+                        "primary-type": "Album",
+                        "first-release-date": "2099-01-01",
+                    }],
+                },
+            },
+        )
+
+    def tearDown(self):
+        if self.ctx.store.state_file.exists():
+            self.ctx.store.state_file.unlink()
+        self.mb_server.reset()
+
+    def _patch_mb(self):
+        return patch("spotify_core.musicbrainz._MB_BASE_URL", self.mb_server.base_url)
+
+    def test_exclude_prerelease_through_ui_then_release_stays_out_of_playlist(self):
+        # Phase 1: seed the prerelease state, then exercise the real UI route.
+        # Discovery itself is covered by the scan regression tests; this E2E
+        # test focuses on the UI -> release handoff -> Spotify lifecycle.
+        core.save_state(core.State(musicbrainz_upcoming={
+            "rg-e2e": core.MusicBrainzAlbum(
+                "rg-e2e", "Album 0 by Artist 0", "E2E Artist",
+                "a000000000000000000000", "2099-01-01", "",
+            ),
+        }))
+
+        state = core.load_state()
+        self.assertIn("rg-e2e", state.musicbrainz_upcoming)
+        self.assertFalse(state.musicbrainz_upcoming["rg-e2e"].manual_excluded)
+
+        # Phase 2: exercise the actual dashboard route, not the helper directly.
+        dashboard = self.client.get("/")
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertIn(b"Album 0 by Artist 0", dashboard.data)
+        self.assertIn(b"Exclude", dashboard.data)
+
+        response = self.client.post(
+            "/musicbrainz/rg-e2e/override",
+            data={"value": "true"},
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+
+        state = core.load_state()
+        self.assertTrue(state.musicbrainz_upcoming["rg-e2e"].manual_excluded)
+        self.assertIn(b"Include", response.data)
+        self.assertIn(b"excluded", response.data)
+
+        # Simulate the stored prerelease date reaching today. In production this
+        # happens naturally as the clock advances; the test advances only the
+        # persisted MB date so the real prune/handoff code executes.
+        state = core.load_state()
+        state.musicbrainz_upcoming["rg-e2e"].release_date = "2026-09-29"
+        core.save_state(state)
+
+        # Phase 3: the release arrives. Spotify now reports the same album/date.
+        self.mb_server.configure(
+            artist_catalog={
+                "mb-e2e-artist": {
+                    "name": "E2E Artist",
+                    "life_span": {"ended": False},
+                    "release-groups": [{
+                        "id": "rg-e2e",
+                        "title": "Album 0 by Artist 0",
+                        "primary-type": "Album",
+                        "first-release-date": "2026-09-29",
+                    }],
+                },
+            },
+        )
+        self.spotify_server.configure(recent_release_date="2026-09-29")
+
+        with self._patch_mb():
+            result = core.run_scan(days=3650, interval_days=0, min_request_interval=0)
+        self.assertEqual(result["status"], "ok")
+
+        state = core.load_state()
+        spotify_album = next(iter(state.known_albums.values()))
+        self.assertTrue(spotify_album.manual_override)
+        self.assertFalse(spotify_album.added_to_playlist)
+        self.assertNotIn("rg-e2e", state.musicbrainz_upcoming)
+
+        # The actual mock Spotify playlist must remain empty.
+        self.assertEqual(self.spotify_server.snapshot()["playlist_track_count"], 0)
+
+        # The released album is now represented in the normal excluded section.
+        excluded = self.client.get("/")
+        self.assertEqual(excluded.status_code, 200)
+        self.assertIn(b"Album 0 by Artist 0", excluded.data)
+
+
+    def test_include_prerelease_restores_normal_playlist_add_on_release(self):
+        # Seed the prerelease state and exercise the real UI route.
+        core.save_state(core.State(musicbrainz_upcoming={
+            "rg-e2e": core.MusicBrainzAlbum(
+                "rg-e2e", "Album 0 by Artist 0", "E2E Artist",
+                "a000000000000000000000", "2099-01-01", "",
+            ),
+        }))
+        response = self.client.post(
+            "/musicbrainz/rg-e2e/override",
+            data={"value": "true"},
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+
+        # Include it again before release.
+        response = self.client.post(
+            "/musicbrainz/rg-e2e/override",
+            data={"value": "false"},
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Exclude", response.data)
+        self.assertFalse(core.load_state().musicbrainz_upcoming["rg-e2e"].manual_excluded)
+
+        # Simulate the stored prerelease date reaching today so the real
+        # scan performs the MB -> Spotify handoff path.
+        state = core.load_state()
+        state.musicbrainz_upcoming["rg-e2e"].release_date = "2026-09-29"
+        core.save_state(state)
+
+        # Release it. With no pending exclusion, normal playlist behavior applies.
+        self.mb_server.configure(
+            artist_catalog={
+                "mb-e2e-artist": {
+                    "name": "E2E Artist",
+                    "life_span": {"ended": False},
+                    "release-groups": [{
+                        "id": "rg-e2e",
+                        "title": "Album 0 by Artist 0",
+                        "primary-type": "Album",
+                        "first-release-date": "2026-09-29",
+                    }],
+                },
+            },
+        )
+        self.spotify_server.configure(recent_release_date="2026-09-29")
+        with self._patch_mb():
+            result = core.run_scan(days=3650, interval_days=0, min_request_interval=0)
+        self.assertEqual(result["status"], "ok")
+
+        state = core.load_state()
+        spotify_album = next(iter(state.known_albums.values()))
+        self.assertIsNone(spotify_album.manual_override)
+        self.assertTrue(spotify_album.added_to_playlist)
+        self.assertEqual(self.spotify_server.snapshot()["playlist_track_count"], 10)
 
 
 class AutoReorderIntegrationTests(unittest.TestCase):

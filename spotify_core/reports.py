@@ -30,10 +30,11 @@ def get_report_albums(state, days):
             total_tracks=0,
             first_seen=mb.first_seen,
             added_to_playlist=False,
+            manual_override=True if mb.manual_excluded else None,
         )
         mb_albums.append(mb_album)
 
-    # Keep MusicBrainz albums grouped first, with both groups newest-date first.
+    # Keep MusicBrainz upcoming albums grouped first, with both groups newest-date first.
     def _sort_key(a):
         d = parse_release_date(a.release_date)
         return d if d is not None else datetime.min

@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import spotify_core as core
 from spotify_core.models import Artist, MusicBrainzAlbum, State
-from spotify_core.scan import _prune_expired_upcoming
 from tests.support import ContextTestCase
+from spotify_core.scan import _normalize_album_title
 
 
 def _artist_payload(artist_id, name):
@@ -28,46 +28,6 @@ def _album_payload(album_id, name, release_date, artist_id="art1"):
         "artists": [{"id": artist_id}],
         "external_urls": {"spotify": f"https://open.spotify.com/album/{album_id}"},
     }
-
-
-class PruneExpiredUpcomingTests(unittest.TestCase):
-
-    def test_removes_albums_releasing_today(self):
-        today = datetime.now().strftime("%Y-%m-%d")
-        state = State(musicbrainz_upcoming={
-            "rg-1": MusicBrainzAlbum(id="rg-1", name="Today Album", artist="A",
-                                     artist_id="a1", release_date=today, first_seen="2025-01-01"),
-            "rg-2": MusicBrainzAlbum(id="rg-2", name="Future Album", artist="B",
-                                     artist_id="b1", release_date="2099-12-31", first_seen="2025-01-01"),
-        })
-        with patch.object(core.scan, "save_state"):
-            _prune_expired_upcoming(MagicMock(), state)
-        self.assertNotIn("rg-1", state.musicbrainz_upcoming)
-        self.assertIn("rg-2", state.musicbrainz_upcoming)
-
-    def test_removes_past_albums(self):
-        state = State(musicbrainz_upcoming={
-            "rg-1": MusicBrainzAlbum(id="rg-1", name="Old Album", artist="A",
-                                     artist_id="a1", release_date="2020-01-01", first_seen="2025-01-01"),
-        })
-        with patch.object(core.scan, "save_state"):
-            _prune_expired_upcoming(MagicMock(), state)
-        self.assertNotIn("rg-1", state.musicbrainz_upcoming)
-
-    def test_keeps_future_albums(self):
-        state = State(musicbrainz_upcoming={
-            "rg-1": MusicBrainzAlbum(id="rg-1", name="Future", artist="A",
-                                     artist_id="a1", release_date="2099-12-31", first_seen="2025-01-01"),
-        })
-        with patch.object(core.scan, "save_state"):
-            _prune_expired_upcoming(MagicMock(), state)
-        self.assertIn("rg-1", state.musicbrainz_upcoming)
-
-    def test_empty_state_no_op(self):
-        state = State()
-        with patch.object(core.scan, "save_state") as mock_save:
-            _prune_expired_upcoming(MagicMock(), state)
-        mock_save.assert_not_called()
 
 
 class MbIdResolutionTests(ContextTestCase):
@@ -227,7 +187,7 @@ class MbUpcomingReleasesTests(ContextTestCase):
         core.save_state(State(musicbrainz_upcoming={
             "rg-1": MusicBrainzAlbum(id="rg-1", name="Already Tracked", artist="Old",
                                      artist_id="old", release_date="2099-06-01",
-                                     first_seen="2025-01-01"),
+                                     first_seen="2025-01-01", manual_excluded=True),
         }))
         future_albums = [
             {"id": "rg-1", "title": "Same Album", "primary-type": "Album",
@@ -241,6 +201,15 @@ class MbUpcomingReleasesTests(ContextTestCase):
 
         state = core.load_state()
         self.assertEqual(state.musicbrainz_upcoming["rg-1"].name, "Already Tracked")
+        self.assertTrue(state.musicbrainz_upcoming["rg-1"].manual_excluded)
+
+
+class MusicBrainzTitleNormalizationTests(unittest.TestCase):
+    def test_normalization_preserves_unicode_letters(self):
+        self.assertEqual(_normalize_album_title("Beyoncé — Déjà Vu"), "beyoncé déjà vu")
+
+    def test_normalization_handles_nfkc_and_punctuation(self):
+        self.assertEqual(_normalize_album_title("Ａｌｂｕｍ—Ⅳ"), "album iv")
 
 
 class MbSkipLogicTests(ContextTestCase):

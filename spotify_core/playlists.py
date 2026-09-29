@@ -294,6 +294,27 @@ def create_playlist(ctx, token, name, description=None):
     return resp["id"]
 
 
+
+def apply_musicbrainz_override(ctx, release_group_id, value):
+    """Set or clear a manual prerelease exclusion."""
+    found = {"value": False}
+
+    def _mutate(state):
+        album = state.musicbrainz_upcoming.get(release_group_id)
+        if not album:
+            return None
+        if value == "true":
+            album.manual_excluded = True
+        elif value == "false":
+            album.manual_excluded = False
+        else:
+            return None
+        found["value"] = True
+        return state
+
+    state_mod.update_state(ctx, _mutate)
+    return found["value"]
+
 def apply_album_override(ctx, album_id, value):
     """Apply a manual include/exclude override for an album.
 

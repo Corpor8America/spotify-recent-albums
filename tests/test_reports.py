@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timedelta
 
-from spotify_core.models import Album, State
+from spotify_core.models import Album, MusicBrainzAlbum, State
 from spotify_core.reports import get_excluded_albums, get_report_albums, get_upcoming_albums
 
 
@@ -40,6 +40,20 @@ class GetReportAlbumsTests(unittest.TestCase):
         state = state_with(make_album("a1", "Recent", "2026-07-01"))
         result = get_report_albums(state, 365)
         self.assertEqual(result[0].id, "a1")
+
+    def test_musicbrainz_upcoming_albums_sort_newest_first(self):
+        state = state_with(
+            make_album("sp1", "Spotify", "2026-09-01"),
+        )
+        state.musicbrainz_upcoming = {
+            "mb-old": MusicBrainzAlbum("mb-old", "Older MB", "Artist", "art1", "2026-10-01", ""),
+            "mb-new": MusicBrainzAlbum("mb-new", "Newer MB", "Artist", "art1", "2026-12-01", ""),
+        }
+        result = get_report_albums(state, 365)
+        self.assertEqual(
+            [a.name for a in result],
+            ["Newer MB", "Older MB", "Spotify"],
+        )
 
 
 class GetExcludedAlbumsTests(unittest.TestCase):

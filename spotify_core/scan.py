@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from .api import (
     ARTIST_ALBUMS_CATEGORY,
     DEFAULT_MIN_REQUEST_INTERVAL_SECONDS,
+    FOLLOWED_ARTISTS_CATEGORY,
     RateLimitError,
     blocked_until,
 )
@@ -141,13 +142,14 @@ def run_scan(ctx, days=None, interval_days=None, min_request_interval=None, mark
         _prune_expired_upcoming(ctx, state)
 
         artists = _fetch_followed_artists(ctx, token, state, blocked_categories)
-        try:
-            remove_unfollowed_artists(ctx, token, state, {a["id"] for a in artists}, playlist_id)
-        except RateLimitError as e:
+        if FOLLOWED_ARTISTS_CATEGORY not in blocked_categories:
+            try:
+                remove_unfollowed_artists(ctx, token, state, {a["id"] for a in artists}, playlist_id)
+            except RateLimitError as e:
             log(f"Skipping unfollowed-artist cleanup -- {e.category} rate-limited.")
-            blocked_categories.append(e.category)
-        except Exception as e:
-            log(f"Skipping unfollowed-artist cleanup: {e}")
+                blocked_categories.append(e.category)
+            except Exception as e:
+                log(f"Skipping unfollowed-artist cleanup: {e}")
         any_new_albums = False
         if artists:
             if verbose:

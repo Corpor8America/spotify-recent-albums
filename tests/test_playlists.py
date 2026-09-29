@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 import spotify_core as core
-from spotify_core.models import Album, State
+from spotify_core.models import Album, MusicBrainzAlbum, State
 from tests.support import ContextTestCase
 
 
@@ -227,6 +227,31 @@ class ApplyAlbumOverrideTests(ContextTestCase):
         entry = core.load_state().known_albums["alb1"]
         self.assertTrue(entry.added_to_playlist)
         self.assertEqual(entry.track_uris, ["spotify:track:a"])
+
+
+class ApplyMusicBrainzOverrideTests(ContextTestCase):
+    def _seed_upcoming(self):
+        core.save_state(State(musicbrainz_upcoming={
+            "rg1": MusicBrainzAlbum(
+                "rg1", "Future Album", "Artist", "art1", "2099-01-01", "",
+            ),
+        }))
+
+    def test_exclude_sets_prerelease_override(self):
+        self._seed_upcoming()
+        self.assertTrue(core.apply_musicbrainz_override("rg1", "true"))
+        entry = core.load_state().musicbrainz_upcoming["rg1"]
+        self.assertTrue(entry.manual_excluded)
+
+    def test_include_clears_prerelease_override(self):
+        self._seed_upcoming()
+        core.apply_musicbrainz_override("rg1", "true")
+        self.assertTrue(core.apply_musicbrainz_override("rg1", "false"))
+        entry = core.load_state().musicbrainz_upcoming["rg1"]
+        self.assertFalse(entry.manual_excluded)
+
+    def test_unknown_release_group_returns_false(self):
+        self.assertFalse(core.apply_musicbrainz_override("missing", "true"))
 
 
 class PlaylistOrderIsStaleTests(ContextTestCase):

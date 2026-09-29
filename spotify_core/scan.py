@@ -5,7 +5,9 @@ playlist-sync new albums, prune the playlist.
 so steps can be tested independently.
 """
 
+import re
 import threading
+import unicodedata
 from datetime import datetime, timedelta, timezone
 
 from .api import (
@@ -83,6 +85,54 @@ def start_scan(ctx, days=None, interval_days=None, min_request_interval=None, ma
     return True
 
 
+def _normalize_album_title(name):
+    """Normalize album titles for simple, Unicode-aware best-effort matching."""
+    value = unicodedata.normalize("NFKC", name or "").casefold()
+    value = "".join(char for char in value if not unicodedata.combining(char))
+    return re.sub(r"[^\w]+", " ", value, flags=re.UNICODE).strip()
+
+
+def _matching_prerelease_exclusion(state, artist, album):
+    """Find the expired MusicBrainz release matching a Spotify album.
+
+    The MB record stays in musicbrainz_upcoming until the artist has been
+    checked, so unmatched Spotify results cannot consume it.
+    """
+    spotify_date = parse_release_date(album.get("release_date", ""))
+    if spotify_date is None:
+        return None
+
+    title = _normalize_album_title(album.get("name", ""))
+    today = datetime.now().date()
+    for mb_album in state.musicbrainz_upcoming.values():
+        mb_date = parse_release_date(mb_album.release_date)
+        if mb_date is None or mb_date.date() > today:
+            continue
+        if mb_album.artist_id != artist["id"] or not mb_album.manual_excluded:
+            continue
+        if _normalize_album_title(mb_album.name) != title:
+            continue
+        if mb_date.date() != spotify_date.date():
+            continue
+        return mb_album
+    return None
+
+
+def _remove_checked_musicbrainz_upcoming(state, artist):
+    """Discard expired MusicBrainz prerelease records after the artist scan."""
+    today = datetime.now().date()
+    removed = False
+    for rg_id, mb_album in list(state.musicbrainz_upcoming.items()):
+        release_date = parse_release_date(mb_album.release_date)
+        if mb_album.artist_id != artist["id"]:
+            continue
+        if release_date is None or release_date.date() > today:
+            continue
+        del state.musicbrainz_upcoming[rg_id]
+        removed = True
+    return removed
+
+
 def record_album(state, artist, album, now_iso):
     """Insert/update an album in state, preserving existing override and
     playlist-sync fields."""
@@ -135,9 +185,6 @@ def run_scan(ctx, days=None, interval_days=None, min_request_interval=None, mark
             save_state(ctx, state)
         playlist_id = cfg["spotify_playlist_id"] or None
         blocked_categories = []
-
-        # Phase 0: Prune MusicBrainz upcoming albums whose release date has passed
-        _prune_expired_upcoming(ctx, state)
 
         artists = _fetch_followed_artists(ctx, token, state, blocked_categories)
         any_new_albums = False
@@ -195,20 +242,6 @@ def _authenticate(ctx, cfg):
         log("Not connected to Spotify yet -- visit /login first.")
         return None
     return get_access_token(ctx, client_id, client_secret, refresh_token)
-
-
-def _prune_expired_upcoming(ctx, state):
-    """Remove MusicBrainz upcoming albums whose release date is today or in the past."""
-    today = datetime.now().strftime("%Y-%m-%d")
-    to_remove = []
-    for rg_id, album in state.musicbrainz_upcoming.items():
-        if album.release_date <= today:
-            to_remove.append(rg_id)
-            log(f"MB: release date reached for '{album.name}' by {album.artist}")
-    for rg_id in to_remove:
-        del state.musicbrainz_upcoming[rg_id]
-    if to_remove:
-        save_state(ctx, state)
 
 
 def _fetch_followed_artists(ctx, token, state, blocked_categories):
@@ -428,6 +461,8 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
             log(f"    Retrieved {len(albums)} album(s)")
             new_count = _record_new_albums(ctx, token, state, artist, albums, cutoff,
                                            playlist_id, now_iso)
+            if _remove_checked_musicbrainz_upcoming(state, artist):
+                save_state(ctx, state)
             if new_count:
                 log(f"    Added {new_count} new album(s)")
                 any_new_albums = True
@@ -466,8 +501,12 @@ def _record_new_albums(ctx, token, state, artist, albums, cutoff, playlist_id, n
 
         existing_entry = state.known_albums.get(album["id"])
         needs_playlist_add = existing_entry is None or not existing_entry.added_to_playlist
+        prerelease_exclusion = _matching_prerelease_exclusion(state, artist, album)
         record_album(state, artist, album, now_iso)
         entry = state.known_albums[album["id"]]
+        if prerelease_exclusion is not None:
+            entry.manual_override = True
+            log(f"      Applied MusicBrainz pre-release exclusion to '{album['name']}'")
         if needs_playlist_add and not is_effectively_excluded(entry) and playlist_id and not is_unreleased:
             try:
                 track_uris = get_album_track_uris(ctx, token, album["id"], state)

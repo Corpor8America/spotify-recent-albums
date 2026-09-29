@@ -244,6 +244,16 @@ def create_app():
             return "Unknown album", 404
         return redirect(url_for("dashboard"))
 
+    @app.route("/musicbrainz/<release_group_id>/override", methods=["POST"])
+    def set_musicbrainz_override(release_group_id):
+        value = request.form.get("value")
+        if value not in ("true", "false"):
+            return "Invalid MusicBrainz override value", 400
+        known = core.apply_musicbrainz_override(release_group_id, value)
+        if not known:
+            return "Unknown MusicBrainz release", 404
+        return redirect(url_for("dashboard"))
+
     # --- Followed Artists --------------------------------------------------------
 
     @app.route("/artists")

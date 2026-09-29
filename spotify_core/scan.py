@@ -21,7 +21,8 @@ from .filters import is_auto_excluded, is_effectively_excluded, parse_release_da
 from .logging import clear_logs, log, log_exception
 from .models import Album, Artist, MusicBrainzAlbum, ScanProgress
 from .musicbrainz import MB_ACTIVE_REFRESH_DAYS, get_artist_status_and_release_groups, resolve_spotify_to_mb
-from .playlists import add_tracks_to_playlist, get_album_track_uris, playlist_order_is_stale, prune_playlist, reorder_playlist
+from .playlists import (add_tracks_to_playlist, get_album_track_uris, playlist_order_is_stale,
+                         prune_playlist, remove_unfollowed_artists, reorder_playlist)
 from .state import clear_expired_rate_limits, load_state, save_state, update_state
 
 # Serializes scan runs so the scheduler and a manual "Run now" click can
@@ -140,6 +141,13 @@ def run_scan(ctx, days=None, interval_days=None, min_request_interval=None, mark
         _prune_expired_upcoming(ctx, state)
 
         artists = _fetch_followed_artists(ctx, token, state, blocked_categories)
+        try:
+            remove_unfollowed_artists(ctx, token, state, {a["id"] for a in artists}, playlist_id)
+        except RateLimitError as e:
+            log(f"Skipping unfollowed-artist cleanup -- {e.category} rate-limited.")
+            blocked_categories.append(e.category)
+        except Exception as e:
+            log(f"Skipping unfollowed-artist cleanup: {e}")
         any_new_albums = False
         if artists:
             if verbose:

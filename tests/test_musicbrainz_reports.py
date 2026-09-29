@@ -86,7 +86,7 @@ class ReportAlbumsMusicBrainzTests(unittest.TestCase):
         self.assertEqual(result[1].id, "mb_rg-2")
         self.assertEqual(result[2].id, "a1")
 
-    def test_mb_albums_sorted_by_release_date_soonest_first(self):
+    def test_mb_albums_sorted_by_release_date_newest_first(self):
         state = State(
             musicbrainz_upcoming={
                 "rg-later": _make_mb_album("rg-later", "Later", release_date="2026-10-16"),
@@ -94,7 +94,7 @@ class ReportAlbumsMusicBrainzTests(unittest.TestCase):
             },
         )
         result = get_report_albums(state, 365)
-        self.assertEqual([a.id for a in result], ["mb_rg-sooner", "mb_rg-later"])
+        self.assertEqual([a.id for a in result], ["mb_rg-later", "mb_rg-sooner"])
 
 
 if __name__ == "__main__":

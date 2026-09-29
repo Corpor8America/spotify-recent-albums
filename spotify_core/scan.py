@@ -144,9 +144,11 @@ def run_scan(ctx, days=None, interval_days=None, min_request_interval=None, mark
         artists = _fetch_followed_artists(ctx, token, state, blocked_categories)
         if FOLLOWED_ARTISTS_CATEGORY not in blocked_categories:
             try:
-                remove_unfollowed_artists(ctx, token, state, {a["id"] for a in artists}, playlist_id)
+                remove_unfollowed_artists(
+                    ctx, token, state, {a["id"] for a in artists}, playlist_id
+                )
             except RateLimitError as e:
-            log(f"Skipping unfollowed-artist cleanup -- {e.category} rate-limited.")
+                log(f"Skipping unfollowed-artist cleanup -- {e.category} rate-limited.")
                 blocked_categories.append(e.category)
             except Exception as e:
                 log(f"Skipping unfollowed-artist cleanup: {e}")

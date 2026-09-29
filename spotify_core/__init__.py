@@ -59,6 +59,7 @@ from .models import Album, Artist, MusicBrainzAlbum, ScanProgress, State
 from .playlists import (
     add_tracks_to_playlist,
     apply_album_override,
+    apply_musicbrainz_override,
     create_playlist,
     get_album_track_uris,
     get_playlist_track_uris,
@@ -133,6 +134,7 @@ prune_playlist = _bind(playlists, "prune_playlist")
 reorder_playlist = _bind(playlists, "reorder_playlist")
 create_playlist = _bind(playlists, "create_playlist")
 apply_album_override = _bind(playlists, "apply_album_override")
+apply_musicbrainz_override = _bind(playlists, "apply_musicbrainz_override")
 
 start_scan = _bind(scan, "start_scan")
 cancel_scan = _bind(scan, "cancel_scan")

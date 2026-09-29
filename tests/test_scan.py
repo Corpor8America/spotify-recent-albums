@@ -6,8 +6,11 @@ from unittest.mock import patch, MagicMock
 
 import spotify_core as core
 from spotify_core.api import ARTIST_ALBUMS_CATEGORY
-from spotify_core.models import Album, Artist, ScanProgress, State
-from spotify_core.scan import get_due_artists, record_album, _plan_artists, _mb_classify_and_order, _active_check_is_fresh, _maybe_auto_reorder
+from spotify_core.models import Album, Artist, MusicBrainzAlbum, ScanProgress, State
+from spotify_core.scan import (
+    get_due_artists, record_album, _plan_artists, _mb_classify_and_order,
+    _active_check_is_fresh, _maybe_auto_reorder,
+)
 from tests.support import ContextTestCase
 
 
@@ -589,6 +592,98 @@ class MbClassifyAndOrderTests(unittest.TestCase):
         self.assertEqual(ordered, ["a1"])
         self.assertEqual(skip, set())
 
+
+class MusicBrainzPrereleaseExclusionTests(ContextTestCase):
+    def _mb_album(self, rg_id="rg1", name="Future Album", artist_id="art1",
+                  release_date="2026-09-29", manual_excluded=False):
+        return MusicBrainzAlbum(
+            rg_id, name, "Artist", artist_id, release_date, "",
+            manual_excluded=manual_excluded,
+        )
+
+    def _record(self, state, albums):
+        with patch("spotify_core.scan.get_album_track_uris", return_value=[]), \
+             patch("spotify_core.scan.add_tracks_to_playlist"):
+            return core.scan._record_new_albums(
+                self.ctx, "token", state, artist_payload("art1", "Artist"),
+                albums, datetime.now() - timedelta(days=365), None,
+                "2026-09-29T00:00:00+00:00",
+            )
+
+    def test_expired_mb_album_stays_until_artist_is_checked(self):
+        state = State(musicbrainz_upcoming={
+            "rg1": self._mb_album(manual_excluded=True),
+        })
+        self.assertIn("rg1", state.musicbrainz_upcoming)
+
+        spotify = album_payload("sp1", "Future Album", "2026-09-29")
+        self._record(state, [spotify])
+
+        self.assertTrue(state.known_albums["sp1"].manual_override)
+        self.assertIn("rg1", state.musicbrainz_upcoming)
+
+        self.assertTrue(core.scan._remove_checked_musicbrainz_upcoming(
+            state, artist_payload("art1", "Artist")))
+        self.assertNotIn("rg1", state.musicbrainz_upcoming)
+
+    def test_matching_album_can_follow_a_nonmatching_spotify_album(self):
+        state = State(musicbrainz_upcoming={
+            "rg1": self._mb_album(manual_excluded=True),
+        })
+        albums = [
+            album_payload("sp-other", "Other Album", "2026-09-29"),
+            album_payload("sp-match", "Future Album", "2026-09-29"),
+        ]
+
+        self._record(state, albums)
+
+        self.assertIsNone(state.known_albums["sp-other"].manual_override)
+        self.assertTrue(state.known_albums["sp-match"].manual_override)
+        self.assertIn("rg1", state.musicbrainz_upcoming)
+
+    def test_unmatched_spotify_album_remains_normal_until_mb_record_is_removed(self):
+        state = State(musicbrainz_upcoming={
+            "rg1": self._mb_album(name="Different Album", manual_excluded=True),
+        })
+        spotify = album_payload("sp1", "Actual Album", "2026-09-29")
+
+        self._record(state, [spotify])
+
+        self.assertIsNone(state.known_albums["sp1"].manual_override)
+        self.assertIn("rg1", state.musicbrainz_upcoming)
+
+        self.assertTrue(core.scan._remove_checked_musicbrainz_upcoming(
+            state, artist_payload("art1", "Artist")))
+        self.assertNotIn("rg1", state.musicbrainz_upcoming)
+
+    def test_unrelated_artist_mb_record_is_not_removed(self):
+        state = State(musicbrainz_upcoming={
+            "rg1": self._mb_album(artist_id="art2"),
+        })
+
+        self.assertFalse(core.scan._remove_checked_musicbrainz_upcoming(
+            state, artist_payload("art1", "Artist")))
+        self.assertIn("rg1", state.musicbrainz_upcoming)
+
+    def test_future_mb_record_is_not_removed(self):
+        state = State(musicbrainz_upcoming={
+            "rg1": self._mb_album(release_date="2099-01-01"),
+        })
+
+        self.assertFalse(core.scan._remove_checked_musicbrainz_upcoming(
+            state, artist_payload("art1", "Artist")))
+        self.assertIn("rg1", state.musicbrainz_upcoming)
+
+    def test_same_title_requires_same_release_date(self):
+        state = State(musicbrainz_upcoming={
+            "rg1": self._mb_album(release_date="2026-09-28", manual_excluded=True),
+        })
+        spotify = album_payload("sp1", "Future Album", "2026-09-29")
+
+        self._record(state, [spotify])
+
+        self.assertIsNone(state.known_albums["sp1"].manual_override)
+        self.assertIn("rg1", state.musicbrainz_upcoming)
 
 class AutoReorderTests(ContextTestCase):
     """Tests for _maybe_auto_reorder."""

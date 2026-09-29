@@ -92,7 +92,11 @@
             <td>{{ a.release_date }}</td>
             <td>
               {% if a.id.startswith('mb_') %}
-                <span class="badge warn" style="padding: 0.15rem 0.5rem; font-size: 0.7rem; border-radius: 6px;">upcoming</span>
+                {% if a.manual_override %}
+                  <span class="badge" style="padding: 0.15rem 0.5rem; font-size: 0.7rem; border-radius: 6px;">excluded</span>
+                {% else %}
+                  <span class="badge warn" style="padding: 0.15rem 0.5rem; font-size: 0.7rem; border-radius: 6px;">upcoming</span>
+                {% endif %}
               {% elif a.added_to_playlist %}
                 <span class="badge ok" style="padding: 0.15rem 0.5rem; font-size: 0.7rem; border-radius: 6px;">added</span>
               {% else %}
@@ -100,7 +104,15 @@
               {% endif %}
             </td>
             <td>
-              {% if not a.id.startswith('mb_') %}
+              {% if a.id.startswith('mb_') %}
+                <form method="post" action="{{ url_for('set_musicbrainz_override', release_group_id=a.id[3:]) }}" style="display:inline">
+                  <input type="hidden" name="value" value="{% if a.manual_override %}false{% else %}true{% endif %}">
+                  <button class="btn small secondary" type="submit">
+                    <span class="material-symbols-outlined" style="font-size: 14px;">{% if a.manual_override %}add{% else %}block{% endif %}</span>
+                    {% if a.manual_override %}Include{% else %}Exclude{% endif %}
+                  </button>
+                </form>
+              {% else %}
               <form method="post" action="{{ url_for('set_override', album_id=a.id) }}" style="display:inline">
                 <input type="hidden" name="value" value="true">
                 <button class="btn small secondary" type="submit">
@@ -125,7 +137,7 @@
     <span class="collapse-icon material-symbols-outlined">expand_more</span>
   </summary>
   <div class="card-body">
-    <p class="muted" style="margin-bottom: 1.25rem;">Live/remaster/deluxe editions matched by the trailing parenthetical/bracket filter, plus anything you've manually excluded. Flip an override to bring one back.</p>
+    <p class="muted" style="margin-bottom: 1.25rem;">Live/remaster/deluxe editions matched by the trailing parenthetical/bracket filter, plus albums you've manually excluded. Pre-release exclusions are transferred to the Spotify album when its release is detected.</p>
     <div class="table-container">
       <table class="excluded-table">
         <thead>

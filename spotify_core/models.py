@@ -122,6 +122,7 @@ class MusicBrainzAlbum:
     artist_id: str
     release_date: str
     first_seen: str
+    manual_excluded: bool = False
 
     @classmethod
     def from_dict(cls, album_id, d):
@@ -132,6 +133,7 @@ class MusicBrainzAlbum:
             artist_id=d.get("artist_id", ""),
             release_date=d.get("release_date", ""),
             first_seen=d.get("first_seen", ""),
+            manual_excluded=bool(d.get("manual_excluded", False)),
         )
 
     def to_dict(self):
@@ -141,6 +143,7 @@ class MusicBrainzAlbum:
             "artist_id": self.artist_id,
             "release_date": self.release_date,
             "first_seen": self.first_seen,
+            "manual_excluded": self.manual_excluded,
         }
 
 
@@ -182,6 +185,7 @@ class State:
     in_progress: Optional[ScanProgress] = None
     rate_limits: dict = field(default_factory=dict)   # category -> unix ts
     musicbrainz_upcoming: dict = field(default_factory=dict)  # rg_id -> MusicBrainzAlbum
+
 
     @classmethod
     def from_dict(cls, d):

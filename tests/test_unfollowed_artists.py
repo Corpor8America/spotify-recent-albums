@@ -23,6 +23,10 @@ def make_album(album_id, artist_id, added=False, track_uris=None):
 
 
 class UnfollowedArtistCleanupTests(ContextTestCase):
+    def setUp(self):
+        super().setUp()
+        self.write_token("test-token")
+
     def test_removes_artist_albums_mb_entries_and_playlist_tracks(self):
         state = State(
             artists={

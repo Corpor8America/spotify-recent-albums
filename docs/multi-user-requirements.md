@@ -2,13 +2,13 @@
 
 **Status:** Planning document; no application behavior is changed by this document.  
 **Branch:** `docs/multi-user-requirements`  
-**Scope:** Convert the current single-user Spotify web application into a multi-user application, including an authentication approach that does not depend on Cloudflare Access/Google IdP.
+**Scope:** Convert the current single-user Spotify web application into a multi-user application, including an authentication approach that keeps Cloudflare Access as a required part of the access-control path.
 
 ## 1. Purpose and problem statement
 
 The application currently behaves as one shared Spotify account and one shared installation. Its configuration, Spotify refresh token, scan state, logs, playlist target, and background work are process-wide or stored in one shared data directory. This is appropriate for a single operator, but it is not a safe multi-user boundary.
 
-The deployed app is currently being blocked at the Cloudflare Access layer when accessed through the Google identity provider. Multi-user support must not assume that Cloudflare Access or Google login is available to reach the application. The application needs its own supported sign-in and session flow, or a separately chosen identity provider that is not dependent on the failing path.
+The deployed app is currently protected by Cloudflare Access: visitors must authenticate through its Google identity provider and have a whitelisted email address before they can reach the application. Cloudflare must remain part of authentication/access control in the multi-user design. The current Google/allowlist flow may remain, or Cloudflare Access may be configured with a different supported identity provider or policy. The design must address how Cloudflare identifies and admits each user; it must not bypass Cloudflare or assume the application is publicly reachable. Application-level sessions and authorization may be added for tenant isolation, but they complement rather than replace the required Cloudflare layer.
 
 The goal is to let multiple independent users access one deployed application while each user connects their own Spotify account and has private configuration, scan state, album decisions, logs, and playlist settings.
 
@@ -37,7 +37,7 @@ The existing `AppContext` and `Store` abstraction are useful seams, but they do 
 
 ### 3.1 User identity and sign-in
 
-1. Users must be able to reach the app without passing through the currently failing Cloudflare Access Google IdP flow.
+1. Cloudflare Access must remain in the request path and enforce its configured authentication/access policy. The current Google IdP and whitelisted-email policy may be retained, or replaced with a supported Cloudflare Access configuration that meets the multi-user account policy.
 2. The application must authenticate each user before showing private application data or accepting mutations.
 3. A user must have a stable internal user ID that is not derived from a mutable display name.
 4. Sign-in and sign-out must be supported from the app.
@@ -199,7 +199,7 @@ The following areas need explicit review:
 
 ## 5. Authentication and Cloudflare compatibility
 
-The application must remain usable when Cloudflare Access is unavailable or rejects the Google IdP flow. Do not rely on the Cloudflare Access cookie as the app's only identity mechanism.
+Cloudflare Access is a required part of the deployed authentication/access-control path. The application must not bypass it or expose private app routes directly to the public internet. The current Google IdP/whitelisted-email flow may remain, but if it is changed, the replacement must be configured and tested in Cloudflare Access.
 
 Required deployment behavior:
 - Cloudflare may remain as a reverse proxy/WAF, but app authentication must be independently functional.
@@ -209,7 +209,7 @@ Required deployment behavior:
 - Ensure OAuth callback routes are reachable through the chosen deployment path.
 - Provide an operational way for the owner to bootstrap the first administrator without opening an unauthenticated admin endpoint.
 
-The specific cause of the current Cloudflare/Google block should be investigated separately. This multi-user design must not assume the cause is a code defect or promise that application changes alone will fix Cloudflare's external IdP configuration.
+The specific cause of the current Cloudflare/Google block should be investigated separately. The implementation must verify the selected Cloudflare Access configuration end to end; application changes alone cannot fix an external IdP or Access policy problem.
 
 ## 6. Security and privacy requirements
 
@@ -323,7 +323,7 @@ This sequence is intended to keep the work reviewable and prevent a partial mult
 ### Phase 0 — Confirm product and deployment decisions
 - Decide registration/invitation policy and whether there is an administrator role.
 - Decide whether Spotify developer credentials are shared deployment credentials or supplied by each user.
-- Decide identity mechanism independent of the blocked Cloudflare/Google path.
+- Decide whether to retain the current Cloudflare Access Google IdP and email allowlist or configure another supported Cloudflare Access identity/admission flow.
 - Decide SQLite single-instance versus PostgreSQL/multi-worker support.
 - Decide whether multiple users may scan concurrently and define global limits.
 - Decide user deletion and data export semantics.
@@ -356,7 +356,7 @@ This sequence is intended to keep the work reviewable and prevent a partial mult
 ### Phase 5 — Worker/scheduler and production hardening
 - Deploy coordinated worker/scheduler and shared persistence.
 - Add concurrency/fair-use controls, graceful shutdown, health checks, and operational documentation.
-- Validate Cloudflare proxy configuration without making it a required identity source.
+- Validate Cloudflare Access as a required authentication/access-control layer and verify the app's tenant authorization behind it.
 
 ### Phase 6 — End-to-end verification and rollout
 - Run unit, route, integration, migration, and deployment tests.
@@ -383,7 +383,7 @@ These are intentionally open; the code should not silently choose for the produc
 
 The conversion is complete only when:
 
-- Multiple users can independently authenticate without the blocked Cloudflare/Google Access flow being a prerequisite.
+- Multiple users can reach the app only through the configured Cloudflare Access authentication/access policy, and the application enforces tenant authorization for each admitted user.
 - Each user can connect and disconnect their own Spotify account.
 - All settings, state, reports, logs, jobs, overrides, and playlist operations are isolated by user.
 - Two users can use the app concurrently without cross-account reads, writes, token use, or job cancellation.

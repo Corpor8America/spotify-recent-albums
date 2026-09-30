@@ -138,7 +138,7 @@ Deleting a user must not delete another user's data. The deletion policy for Spo
 
 ### 4.1 Persistence: move from shared JSON files to a multi-tenant database
 
-The current JSON files are single-instance files and are not an adequate concurrent multi-user database. A relational database (SQLite for a strictly single-instance deployment or PostgreSQL for multi-worker/multi-replica deployment) should become the source of truth.
+The current JSON files are single-instance files and are not an adequate concurrent multi-user database. A normalized relational database should become the source of truth. **Use PostgreSQL** for the multi-user implementation. It provides transactional integrity, relational constraints, concurrent access, and a deployment path that does not depend on a single application process or host. Do not use SQLite as the production multi-user database; it would constrain concurrency and complicate scaling. SQLite may still be useful for isolated unit tests, but integration tests should exercise PostgreSQL.
 
 The schema must include an internal user table and user ownership on every user-specific record. At minimum, model:
 
@@ -153,7 +153,7 @@ The schema must include an internal user table and user ownership on every user-
 - `rate_limits`: user ID, endpoint category, retry-until timestamp.
 - `logs`: user ID, timestamp, level/message, subject to retention limits.
 
-The exact normalized schema may differ, but all records that represent a user's collection or operations must have an enforceable owner relationship. Add indexes for user-scoped lookups and constraints that prevent cross-user duplicates or orphaned records.
+Use a normalized schema rather than storing whole user states or settings as opaque JSON documents. Separate entities into related tables, use foreign keys, and avoid duplicating values that can be derived from relationships. JSON columns are acceptable only for genuinely variable provider payloads or versioned metadata that is not queried or independently updated.\n\nAll user-owned tables must carry a user ownership relationship directly or through a parent row, and the database must enforce tenant-safe relationships. Prefer composite unique keys and composite foreign keys where needed (for example, a child row referencing both its parent ID and user ID) so a row cannot accidentally point across tenants. Add indexes for user-scoped lookups and constraints that prevent cross-user duplicates or orphaned records. Normalize repeated artist, album, and connection data while retaining user-specific associations and overrides separately.
 
 Shared reference data (for example static application version information) may remain global. MusicBrainz public catalog data may be cached globally only if the cache contains no user-specific overrides, ownership, or private Spotify data. Keep shared cache and user-specific decisions separate.
 
@@ -163,7 +163,7 @@ Shared reference data (for example static application version information) may r
 - Preserve a storage interface where it helps isolate business logic, but avoid forcing relational workflows into a file-shaped interface.
 - Use transactions for multi-record updates, including album recording plus exclusion transfer and scan progress updates.
 - Use atomic database updates or row locking for concurrent scan progress and overrides.
-- Add schema migrations and a documented upgrade/rollback strategy.
+- Add versioned schema migrations and a documented upgrade/rollback strategy. PostgreSQL is the production target; tests must include PostgreSQL integration coverage.
 - Do not store per-user state by placing user IDs into arbitrary filesystem paths as the primary isolation mechanism.
 - If a transitional JSON import/export format is retained, it must be treated as a migration/backup format, not as a concurrent runtime database.
 
@@ -261,7 +261,7 @@ Existing single-user behavior should be preserved for the migrated owner: same t
 
 ## 9. Operational and deployment requirements
 
-- Choose and document the supported database and deployment topology.
+- Use PostgreSQL as the production database and document the supported deployment topology.
 - Configure persistent storage and backup/restore for the database.
 - Provide environment variables or secrets management for database credentials, session signing key, token encryption key, public base URL, OAuth client credentials (if shared), and bootstrap settings.
 - Ensure secrets are not baked into the image or committed to the repository.
@@ -372,7 +372,7 @@ These are intentionally open; the code should not silently choose for the produc
 2. **Who is an administrator?** Is there a single owner/admin, and what can that role see or change?
 3. **Authentication provider:** Local email/password, email magic link, non-Google OIDC, or another provider? What recovery path is required?
 4. **Spotify OAuth application:** One shared Spotify developer app for all users, or each user supplies their own client credentials?
-5. **Database/deployment:** Is the supported target one Docker host, or must multiple app replicas/workers be supported?
+5. **Database/deployment:** PostgreSQL is the chosen production database. Confirm whether the supported deployment must include multiple app replicas/workers; the design should use shared database-backed sessions and coordinated background workers regardless.
 6. **Scan scheduling:** Should each user have an independent schedule? Should scans be disabled until Spotify is connected?
 7. **Concurrency policy:** Maximum simultaneous scans globally and per user; queue or reject excess requests?
 8. **User deletion:** Retain an audit tombstone, fully delete user data, or support export before deletion?

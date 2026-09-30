@@ -82,9 +82,9 @@ If the app uses one shared Spotify developer application, its client ID/secret m
 ### 3.4 Scanning and scheduling
 
 1. Automated scanning remains a **central application process**, rather than creating a separate scheduled scanner for every user.
-2. The central scanner must iterate through all users who have an active Spotify connection and scan each user's followed artists using that user's Spotify credentials and settings.
-3. As each user's artists/releases are processed, the scanner updates that user's database state and playlist as it goes. One user's scan must never use another user's token, state, playlist, or settings.
-4. User-specific configuration such as scan interval, lookback window, request pacing, and verbose logging remains isolated to that user, even though scanning is centrally orchestrated.
+2. The central scanner must iterate through the complete set of followed artists, rather than scanning each user independently. For each followed artist, it scans for relevant albums/releases once.
+3. When an album/release is found for an artist, the scanner identifies every user following that artist and updates each of those users' database state and playlist as appropriate. Each user's Spotify credentials, playlist, settings, exclusions, and other user-specific decisions remain isolated.
+4. User-specific configuration such as lookback window, request pacing, and verbose logging remains isolated to each user. The scanner may use shared artist/release discovery work where possible, but the resulting actions are evaluated separately for each user.
 5. Failure for one user must be isolated: an API error, revoked token, bad artist, or other failure for one user must not terminate the central scan for all other users.
 6. Scan progress must be persisted per user so the application can report the current status and recover appropriately after a restart.
 7. Manual scan requests may request an immediate scan for the current user, but must not create arbitrary-user jobs or alter the central scanner's ownership model.

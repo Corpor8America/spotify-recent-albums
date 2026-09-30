@@ -81,22 +81,22 @@ If the app uses one shared Spotify developer application, its client ID/secret m
 
 ### 3.4 Scanning and scheduling
 
-1. A scan is owned by exactly one user and operates only on that user's Spotify connection, configuration, state, and playlist.
-2. A user's scan must not block, cancel, or overwrite another user's scan.
-3. A user's scan must not be started twice concurrently unless the scan engine explicitly supports safe parallel runs for that same user.
-4. Reorder and scan operations for the same user must retain the current mutual-exclusion guarantees because reorder is destructive to the playlist.
-5. Different users may scan concurrently, subject to deployment resource limits and Spotify rate limits.
-6. Scheduled scans must be created per user and use that user's schedule and enabled/connected status.
-7. Scheduler jobs must be uniquely identified by user ID and safely reconciled when settings change, a user disconnects, or the app restarts.
-8. A scan interrupted by restart must resume from that user's persisted progress without affecting others.
-9. Cancel and status endpoints must address only the current user's job.
+1. Automated scanning remains a **central application process**, rather than creating a separate scheduled scanner for every user.
+2. The central scanner must iterate through all users who have an active Spotify connection and scan each user's followed artists using that user's Spotify credentials and settings.
+3. As each user's artists/releases are processed, the scanner updates that user's database state and playlist as it goes. One user's scan must never use another user's token, state, playlist, or settings.
+4. User-specific configuration such as scan interval, lookback window, request pacing, and verbose logging remains isolated to that user, even though scanning is centrally orchestrated.
+5. Failure for one user must be isolated: an API error, revoked token, bad artist, or other failure for one user must not terminate the central scan for all other users.
+6. Scan progress must be persisted per user so the application can report the current status and recover appropriately after a restart.
+7. Manual scan requests may request an immediate scan for the current user, but must not create arbitrary-user jobs or alter the central scanner's ownership model.
+8. Reorder and scan operations for the same user's playlist must retain the current mutual-exclusion guarantees because reorder is destructive to the playlist.
+9. The central scanner must enforce global resource/rate limits while respecting per-user Spotify pacing and rate-limit state.
 10. A user must not be able to trigger work for an arbitrary user ID.
 
-The current in-process APScheduler design needs special attention if the deployment runs multiple web workers or replicas. Multiple processes must not each launch duplicate schedules. Choose one of:
-- a dedicated scheduler/worker process with a persistent job store and distributed coordination; or
-- a database-backed job queue/worker architecture.
+The scheduler/worker architecture must therefore coordinate one central scan cycle rather than one independent scheduler job per user. If the deployment runs multiple web workers or replicas, only one coordinated scanner may own the scheduled scan cycle at a time. Choose one of:
+- a dedicated scheduler/worker process with a persistent job/lease mechanism and database-backed coordination; or
+- a database-backed job queue/worker architecture with a single scheduled scan coordinator.
 
-A process-local scheduler is acceptable only if deployment is explicitly constrained to one scheduler instance and this constraint is enforced operationally. The design must also define concurrency limits and behavior when many users request scans at once.
+A process-local scheduler is acceptable only if deployment is explicitly constrained to one scheduler instance and this constraint is enforced operationally. The design must define how the central scanner walks users, isolates failures, handles rate limits, and avoids duplicate scan cycles.
 
 ### 3.5 Configuration and settings
 
@@ -325,7 +325,7 @@ This sequence is intended to keep the work reviewable and prevent a partial mult
 - Decide whether Spotify developer credentials are shared deployment credentials or supplied by each user.
 - Decide the application's authentication and account-admission policy (see Section 12). Cloudflare Access is not part of that decision.
 - Decide SQLite single-instance versus PostgreSQL/multi-worker support.
-- Decide whether multiple users may scan concurrently and define global limits.
+- Decide central scanner cadence and define global/per-user concurrency and rate limits.
 - Decide user deletion and data export semantics.
 
 ### Phase 1 — Introduce identity and authorization foundation
@@ -344,7 +344,7 @@ This sequence is intended to keep the work reviewable and prevent a partial mult
 ### Phase 3 — Make core operations tenant-aware
 - Refactor context and service APIs to require user scope.
 - Scope config, tokens, state, logs, rate limits, and all Spotify operations.
-- Scope scan/reorder locks, cancellation, progress, and scheduled jobs.
+- Scope scan/reorder locks, cancellation, progress, and user-specific scan state while preserving a central automated scanner.
 - Audit every core module for implicit default-context access.
 
 ### Phase 4 — Convert routes and UI
@@ -354,7 +354,7 @@ This sequence is intended to keep the work reviewable and prevent a partial mult
 - Verify all mutating routes enforce ownership and CSRF.
 
 ### Phase 5 — Worker/scheduler and production hardening
-- Deploy coordinated worker/scheduler and shared persistence.
+- Deploy a coordinated central scanner/worker and shared persistence.
 - Add concurrency/fair-use controls, graceful shutdown, health checks, and operational documentation.
 - Validate Cloudflare Tunnel connectivity through the CGNAT and verify application-managed authentication and tenant authorization.
 

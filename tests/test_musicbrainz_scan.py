@@ -185,8 +185,8 @@ class MbUpcomingReleasesTests(ContextTestCase):
     def test_does_not_overwrite_existing_upcoming(self, mock_resolve, mock_status):
         artists = [_artist_payload("a1", "Test")]
         core.save_state(State(musicbrainz_upcoming={
-            "rg-1": MusicBrainzAlbum(id="rg-1", name="Already Tracked", artist="Old",
-                                     artist_id="old", release_date="2099-06-01",
+            "rg-1": MusicBrainzAlbum(id="rg-1", name="Already Tracked", artist="Test",
+                                     artist_id="a1", release_date="2099-06-01",
                                      first_seen="2025-01-01", manual_excluded=True),
         }))
         future_albums = [

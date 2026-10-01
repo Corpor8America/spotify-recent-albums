@@ -133,6 +133,43 @@
 
 <details class="card collapsible">
   <summary class="card-header">
+    <span class="material-symbols-outlined">inventory_2</span> Expired albums ({{ expired_albums|length }})
+    <span class="collapse-icon material-symbols-outlined">expand_more</span>
+  </summary>
+  <div class="card-body">
+    <p class="muted" style="margin-bottom: 1.25rem;">Expired albums remain here for twice the configured age limit. Promote an album to add it back to the main playlist, or return it here later. Albums are automatically removed after the retention period.</p>
+    <div class="table-container">
+      <table class="excluded-table">
+        <thead><tr><th>Artist</th><th>Album</th><th>Released</th><th></th></tr></thead>
+        <tbody>
+          {% for a in expired_albums %}
+          <tr>
+            <td>{{ a.artist }}</td>
+            <td><a href="{{ a.url }}" target="_blank" style="font-weight: 500;">{{ a.name }}</a></td>
+            <td>{{ a.release_date }}</td>
+            <td>
+              {% if a.added_to_playlist %}
+              <form method="post" action="{{ url_for('return_album_to_expired', album_id=a.id) }}" style="display:inline">
+                <button class="btn small secondary" type="submit">Return to expired</button>
+              </form>
+              {% else %}
+              <form method="post" action="{{ url_for('promote_expired_album', album_id=a.id) }}" style="display:inline">
+                <button class="btn small" type="submit">Promote</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="muted" style="text-align: center;">No expired albums.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</details>
+
+<details class="card collapsible">
+  <summary class="card-header">
     <span class="material-symbols-outlined">block</span> Excluded albums ({{ excluded_albums|length }})
     <span class="collapse-icon material-symbols-outlined">expand_more</span>
   </summary>

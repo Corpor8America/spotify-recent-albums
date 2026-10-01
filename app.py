@@ -254,6 +254,38 @@ def create_app():
             return "Unknown MusicBrainz release", 404
         return redirect(url_for("dashboard"))
 
+    @app.route("/albums/<album_id>/promote", methods=["POST"])
+    def promote_expired_album(album_id):
+        state = core.load_state()
+        album = state.known_albums.get(album_id)
+        if not album or not album.expired_at:
+            return "Unknown expired album", 404
+        if not core.is_connected():
+            return "Not connected to Spotify", 400
+        known = playlists.apply_override(album_id, "false")
+        if not known:
+            return "Unknown album", 404
+        return redirect(url_for("dashboard"))
+
+    @app.route("/albums/<album_id>/expire", methods=["POST"])
+    def return_album_to_expired(album_id):
+        state = core.load_state()
+        album = state.known_albums.get(album_id)
+        if not album or not album.expired_at:
+            return "Unknown promoted album", 404
+        if album.added_to_playlist:
+            cfg_value = cfg()
+            token = core.get_access_token(
+                cfg_value["spotify_client_id"], cfg_value["spotify_client_secret"],
+                core.load_refresh_token())
+            uris = album.track_uris or core.get_album_track_uris(album_id, state)
+            if uris:
+                core.remove_tracks_from_playlist(cfg_value["spotify_playlist_id"], uris, state)
+        album.added_to_playlist = False
+        album.track_uris = []
+        core.save_state(state)
+        return redirect(url_for("dashboard"))
+
     # --- Followed Artists --------------------------------------------------------
 
     @app.route("/artists")

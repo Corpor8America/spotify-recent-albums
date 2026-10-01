@@ -115,7 +115,7 @@ def _is_expired_album(album, days_lookback):
     now = datetime.now()
     cutoff = now - timedelta(days=days_lookback)
     retention_cutoff = now - timedelta(days=days_lookback * 2)
-    return retention_cutoff <= release_date < cutoff and not album.added_to_playlist
+    return retention_cutoff <= release_date < cutoff
 
 def create_app():
     """Application factory: builds the Flask app and starts the scheduler."""

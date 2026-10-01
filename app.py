@@ -108,6 +108,15 @@ def _format_last_checked(iso_str):
     return dt.strftime("%Y-%m-%d")
 
 
+def _is_expired_album(album, days_lookback):
+    release_date = core.parse_release_date(album.release_date)
+    if release_date is None:
+        return False
+    now = datetime.now()
+    cutoff = now - timedelta(days=days_lookback)
+    retention_cutoff = now - timedelta(days=days_lookback * 2)
+    return retention_cutoff <= release_date < cutoff and not album.added_to_playlist
+
 def create_app():
     """Application factory: builds the Flask app and starts the scheduler."""
     app = Flask(__name__)
@@ -173,7 +182,7 @@ def create_app():
             playlist_id=c["spotify_playlist_id"],
             report_albums=core.get_report_albums(state, c["days_lookback"]),
             excluded_albums=core.get_excluded_albums(state),
-            expired_albums=sorted((a for a in state.known_albums.values() if a.expired_at), key=lambda a: a.expired_at),
+            expired_albums=sorted((a for a in state.known_albums.values() if _is_expired_album(a, c["days_lookback"])), key=lambda a: a.release_date),
             in_progress=state.in_progress,
             rate_limits={
                 cat: format_rate_limit_until(ts)
@@ -259,7 +268,7 @@ def create_app():
     def promote_expired_album(album_id):
         state = core.load_state()
         album = state.known_albums.get(album_id)
-        if not album or not album.expired_at:
+        if not album or not _is_expired_album(album, cfg()["days_lookback"]):
             return "Unknown expired album", 404
         if not core.is_connected():
             return "Not connected to Spotify", 400

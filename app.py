@@ -280,7 +280,7 @@ def create_app():
                 core.load_refresh_token())
             uris = album.track_uris or core.get_album_track_uris(album_id, state)
             if uris:
-                core.remove_tracks_from_playlist(cfg_value["spotify_playlist_id"], uris, state)
+                core.remove_tracks_from_playlist(token, cfg_value["spotify_playlist_id"], uris, state)
         album.added_to_playlist = False
         album.track_uris = []
         core.save_state(state)

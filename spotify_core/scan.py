@@ -460,7 +460,7 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
 
             log(f"    Retrieved {len(albums)} album(s)")
             new_count = _record_new_albums(ctx, token, state, artist, albums, cutoff,
-                                           playlist_id, now_iso, days_lookback)
+                                           playlist_id, now_iso, days)
             if _remove_checked_musicbrainz_upcoming(state, artist):
                 save_state(ctx, state)
             if new_count:
@@ -485,7 +485,7 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
     return any_new_albums
 
 
-def _record_new_albums(ctx, token, state, artist, albums, cutoff, playlist_id, now_iso, days_lookback):
+def _record_new_albums(ctx, token, state, artist, albums, cutoff, playlist_id, now_iso, days_lookback=DEFAULT_DAYS_LOOKBACK):
     new_count = 0
     for album in albums:
         if album["album_type"] != "album":

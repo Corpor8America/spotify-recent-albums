@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import spotify_core as core
@@ -19,7 +20,7 @@ def make_album(album_id, name, release_date, added=False, track_uris=None,
 class PrunePlaylistTests(ContextTestCase):
     def test_removes_aged_out_album_tracks(self):
         state = State(known_albums={
-            "alb1": make_album("alb1", "Old Album", "2020-01-01",
+            "alb1": make_album("alb1", "Old Album", (datetime.now() - timedelta(days=500)).strftime("%Y-%m-%d"),
                                added=True, track_uris=["spotify:track:a", "spotify:track:b"]),
         })
         calls = []

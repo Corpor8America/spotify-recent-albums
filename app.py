@@ -281,8 +281,8 @@ def create_app():
     def return_album_to_expired(album_id):
         state = core.load_state()
         album = state.known_albums.get(album_id)
-        if not album or not album.expired_at:
-            return "Unknown promoted album", 404
+        if not album or not _is_expired_album(album, cfg()["days_lookback"]):
+            return "Unknown expired album", 404
         if album.added_to_playlist:
             cfg_value = cfg()
             token = core.get_access_token(
@@ -293,6 +293,7 @@ def create_app():
                 core.remove_tracks_from_playlist(token, cfg_value["spotify_playlist_id"], uris, state)
         album.added_to_playlist = False
         album.track_uris = []
+        album.manual_override = None
         core.save_state(state)
         return redirect(url_for("dashboard"))
 

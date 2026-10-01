@@ -107,16 +107,31 @@ def remove_tracks_from_playlist(ctx, token, playlist_id, track_uris, state):
 
 
 def prune_playlist(ctx, token, state, days, playlist_id):
-    """Move aged albums out of the main playlist and remove expired records."""
+    """Move aged albums to Expired and permanently drop them after retention."""
     now = datetime.now()
     expiration_cutoff = now - timedelta(days=days)
     retention_cutoff = now - timedelta(days=days * 2)
 
-    for album_id, album in list(state.known_albums.items()):
+    if not playlist_id:
+        return
+
+    # First remove albums that have reached the end of their retention window.
+    # Keep shared tracks if another album still in the playlist uses them.
+    permanent_ids = []
+    for album_id, album in state.known_albums.items():
         release_date = parse_release_date(album.release_date)
-        if release_date is None or release_date >= retention_cutoff:
-            continue
-        if playlist_id and album.added_to_playlist:
+        if release_date is not None and release_date < retention_cutoff:
+            permanent_ids.append(album_id)
+
+    for album_id in permanent_ids:
+        album = state.known_albums[album_id]
+        if album.added_to_playlist:
+            other_uris = {
+                uri
+                for other_id, other in state.known_albums.items()
+                if other_id != album_id and other.added_to_playlist
+                for uri in (other.track_uris or [])
+            }
             track_uris = album.track_uris
             if not track_uris:
                 try:
@@ -124,34 +139,38 @@ def prune_playlist(ctx, token, state, days, playlist_id):
                 except Exception as e:
                     log(f"  ERROR fetching tracks for expired '{album.name}': {e}")
                     continue
-            if track_uris:
+            to_remove = [uri for uri in track_uris if uri not in other_uris]
+            if to_remove:
                 try:
-                    remove_tracks_from_playlist(ctx, token, playlist_id, track_uris, state)
+                    remove_tracks_from_playlist(ctx, token, playlist_id, to_remove, state)
                 except Exception as e:
                     log(f"  ERROR removing expired '{album.name}' from playlist: {e}")
                     continue
         del state.known_albums[album_id]
         state_mod.save_state(ctx, state)
 
-    if not playlist_id:
-        return
-
-    removal_ids, keep_uris = [], set()
+    # Move aged albums out of the main playlist unless explicitly promoted.
+    removal_ids = []
+    keep_uris = {
+        uri
+        for album in state.known_albums.values()
+        if album.added_to_playlist
+        and not (
+            (release := parse_release_date(album.release_date)) is not None
+            and release < expiration_cutoff
+            and album.manual_override is not False
+        )
+        and not is_effectively_excluded(album)
+        for uri in (album.track_uris or [])
+    }
     for album_id, album in state.known_albums.items():
         if not album.added_to_playlist:
             continue
         release_date = parse_release_date(album.release_date)
         aged_out = release_date is not None and release_date < expiration_cutoff
-        if aged_out:
-            keep_uris.update(album.track_uris or [])
-        elif is_effectively_excluded(album):
+        if (aged_out and album.manual_override is not False) or is_effectively_excluded(album):
             removal_ids.append(album_id)
-        else:
-            keep_uris.update(album.track_uris or [])
 
-    if not removal_ids:
-        return
-    log(f"Pruning {len(removal_ids)} album(s) from playlist (excluded)...")
     for album_id in removal_ids:
         album = state.known_albums[album_id]
         track_uris = album.track_uris
@@ -161,17 +180,17 @@ def prune_playlist(ctx, token, state, days, playlist_id):
             except Exception as e:
                 log(f"  ERROR fetching tracks for '{album.name}' during prune: {e}")
                 continue
-        to_remove = [u for u in track_uris if u not in keep_uris]
+        to_remove = [uri for uri in track_uris if uri not in keep_uris]
         if to_remove:
             try:
                 remove_tracks_from_playlist(ctx, token, playlist_id, to_remove, state)
-                log(f"  Removed {len(to_remove)} track(s) from '{album.name}'")
             except Exception as e:
                 log(f"  ERROR removing '{album.name}' from playlist: {e}")
                 continue
         album.added_to_playlist = False
         album.track_uris = []
         state_mod.save_state(ctx, state)
+
 
 def reorder_playlist(ctx, token, state, playlist_id):
     """Reorders the playlist so tracks are sorted by album release date

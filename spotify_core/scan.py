@@ -460,7 +460,7 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
 
             log(f"    Retrieved {len(albums)} album(s)")
             new_count = _record_new_albums(ctx, token, state, artist, albums, cutoff,
-                                           playlist_id, now_iso)
+                                           playlist_id, now_iso, days_lookback)
             if _remove_checked_musicbrainz_upcoming(state, artist):
                 save_state(ctx, state)
             if new_count:
@@ -485,7 +485,7 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
     return any_new_albums
 
 
-def _record_new_albums(ctx, token, state, artist, albums, cutoff, playlist_id, now_iso):
+def _record_new_albums(ctx, token, state, artist, albums, cutoff, playlist_id, now_iso, days_lookback):
     new_count = 0
     for album in albums:
         if album["album_type"] != "album":
@@ -494,13 +494,15 @@ def _record_new_albums(ctx, token, state, artist, albums, cutoff, playlist_id, n
         if artist["id"] not in artist_ids:
             continue
         release_date = parse_release_date(album["release_date"])
-        if release_date and release_date < cutoff:
+        retention_cutoff = cutoff - timedelta(days=days_lookback)
+        if release_date and release_date < retention_cutoff:
             continue
 
         is_unreleased = release_date and release_date.date() > datetime.now().date()
 
         existing_entry = state.known_albums.get(album["id"])
-        needs_playlist_add = existing_entry is None or not existing_entry.added_to_playlist
+        is_expired = release_date is not None and release_date < cutoff
+        needs_playlist_add = (existing_entry is None or not existing_entry.added_to_playlist) and (not is_expired or (existing_entry is not None and existing_entry.manual_override is False))
         prerelease_exclusion = _matching_prerelease_exclusion(state, artist, album)
         record_album(state, artist, album, now_iso)
         entry = state.known_albums[album["id"]]

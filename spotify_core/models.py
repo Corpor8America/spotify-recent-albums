@@ -45,7 +45,6 @@ class Album:
     manual_override: Optional[bool] = None
     added_to_playlist: bool = False
     track_uris: list = field(default_factory=list)
-    expired_at: str = ""
 
     @classmethod
     def from_dict(cls, album_id, d):
@@ -63,7 +62,6 @@ class Album:
             manual_override=d.get("manual_override"),
             added_to_playlist=bool(d.get("added_to_playlist", False)),
             track_uris=list(d.get("track_uris") or []),
-            expired_at=d.get("expired_at", ""),
         )
 
     def to_dict(self):
@@ -80,7 +78,6 @@ class Album:
             "manual_override": self.manual_override,
             "added_to_playlist": self.added_to_playlist,
             "track_uris": list(self.track_uris),
-            "expired_at": self.expired_at,
         }
 
 

@@ -173,6 +173,7 @@ def create_app():
             playlist_id=c["spotify_playlist_id"],
             report_albums=core.get_report_albums(state, c["days_lookback"]),
             excluded_albums=core.get_excluded_albums(state),
+            expired_albums=sorted((a for a in state.known_albums.values() if a.expired_at), key=lambda a: a.expired_at),
             in_progress=state.in_progress,
             rate_limits={
                 cat: format_rate_limit_until(ts)

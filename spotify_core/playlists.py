@@ -107,11 +107,23 @@ def remove_tracks_from_playlist(ctx, token, playlist_id, track_uris, state):
 
 
 def prune_playlist(ctx, token, state, days, playlist_id):
-    """Remove tracks of aged-out or excluded albums from the playlist.
-    Tracks shared with a kept album are never removed."""
+    """Expire aged albums and discard expired records after twice the age limit."""
+    now = datetime.now()
+    retention_cutoff = now - timedelta(days=days * 2)
+    for album_id, album in list(state.known_albums.items()):
+        if album.expired_at:
+            try:
+                expired_at = datetime.fromisoformat(album.expired_at)
+            except (TypeError, ValueError):
+                expired_at = now
+            if expired_at <= retention_cutoff:
+                del state.known_albums[album_id]
+                state_mod.save_state(ctx, state)
+                continue
+
     if not playlist_id:
         return
-    cutoff = datetime.now() - timedelta(days=days)
+    cutoff = now - timedelta(days=days)
     removal_ids, keep_uris = [], set()
     for album_id, album in state.known_albums.items():
         if not album.added_to_playlist:
@@ -120,13 +132,13 @@ def prune_playlist(ctx, token, state, days, playlist_id):
         aged_out = release_date is not None and release_date < cutoff
         excluded = is_effectively_excluded(album)
         if aged_out or excluded:
-            removal_ids.append(album_id)
+            removal_ids.append((album_id, aged_out and not excluded))
         else:
             keep_uris.update(album.track_uris or [])
     if not removal_ids:
         return
     log(f"Pruning {len(removal_ids)} album(s) from playlist (aged-out or excluded)...")
-    for album_id in removal_ids:
+    for album_id, expired in removal_ids:
         album = state.known_albums[album_id]
         track_uris = album.track_uris
         if not track_uris:
@@ -145,6 +157,8 @@ def prune_playlist(ctx, token, state, days, playlist_id):
                 continue
         album.added_to_playlist = False
         album.track_uris = []
+        if expired and not album.expired_at:
+            album.expired_at = now.isoformat()
         state_mod.save_state(ctx, state)
 
 

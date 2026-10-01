@@ -151,6 +151,7 @@ def record_album(state, artist, album, now_iso):
         manual_override=existing.manual_override if existing else None,
         added_to_playlist=existing.added_to_playlist if existing else False,
         track_uris=list(existing.track_uris) if existing else [],
+        expired_at=existing.expired_at if existing else "",
     )
 
 
@@ -500,7 +501,12 @@ def _record_new_albums(ctx, token, state, artist, albums, cutoff, playlist_id, n
         is_unreleased = release_date and release_date.date() > datetime.now().date()
 
         existing_entry = state.known_albums.get(album["id"])
-        needs_playlist_add = existing_entry is None or not existing_entry.added_to_playlist
+        # Expired albums stay in Expired across rescans unless the user has
+        # already promoted them (represented by added_to_playlist).
+        needs_playlist_add = (
+            existing_entry is None
+            or (not existing_entry.added_to_playlist and not existing_entry.expired_at)
+        )
         prerelease_exclusion = _matching_prerelease_exclusion(state, artist, album)
         record_album(state, artist, album, now_iso)
         entry = state.known_albums[album["id"]]

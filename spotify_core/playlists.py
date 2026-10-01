@@ -107,21 +107,14 @@ def remove_tracks_from_playlist(ctx, token, playlist_id, track_uris, state):
 
 
 def prune_playlist(ctx, token, state, days, playlist_id):
-    """Expire aged albums and discard expired records after twice the age limit."""
+    """Move aged albums out of the main playlist and remove expired records."""
     now = datetime.now()
+    expiration_cutoff = now - timedelta(days=days)
     retention_cutoff = now - timedelta(days=days * 2)
 
-    # Permanent cleanup is governed by the original expired_at timestamp.
-    # If an expired album was promoted back to the playlist, remove its tracks
-    # before deleting its state record.
     for album_id, album in list(state.known_albums.items()):
-        if not album.expired_at:
-            continue
-        try:
-            expired_at = datetime.fromisoformat(album.expired_at)
-        except (TypeError, ValueError):
-            continue
-        if expired_at > retention_cutoff:
+        release_date = parse_release_date(album.release_date)
+        if release_date is None or release_date >= retention_cutoff:
             continue
         if playlist_id and album.added_to_playlist:
             track_uris = album.track_uris
@@ -143,28 +136,23 @@ def prune_playlist(ctx, token, state, days, playlist_id):
     if not playlist_id:
         return
 
-    cutoff = now - timedelta(days=days)
     removal_ids, keep_uris = [], set()
     for album_id, album in state.known_albums.items():
         if not album.added_to_playlist:
             continue
         release_date = parse_release_date(album.release_date)
-        # An already-expired album controls its own retention window. Promotion
-        # does not reset that window or cause it to be re-expired immediately.
-        aged_out = (
-            not album.expired_at
-            and release_date is not None
-            and release_date < cutoff
-        )
-        excluded = is_effectively_excluded(album)
-        if aged_out or excluded:
-            removal_ids.append((album_id, aged_out and not excluded))
+        aged_out = release_date is not None and release_date < expiration_cutoff
+        if aged_out:
+            keep_uris.update(album.track_uris or [])
+        elif is_effectively_excluded(album):
+            removal_ids.append(album_id)
         else:
             keep_uris.update(album.track_uris or [])
+
     if not removal_ids:
         return
-    log(f"Pruning {len(removal_ids)} album(s) from playlist (aged-out or excluded)...")
-    for album_id, expired in removal_ids:
+    log(f"Pruning {len(removal_ids)} album(s) from playlist (excluded)...")
+    for album_id in removal_ids:
         album = state.known_albums[album_id]
         track_uris = album.track_uris
         if not track_uris:
@@ -183,8 +171,6 @@ def prune_playlist(ctx, token, state, days, playlist_id):
                 continue
         album.added_to_playlist = False
         album.track_uris = []
-        if expired and not album.expired_at:
-            album.expired_at = now.isoformat()
         state_mod.save_state(ctx, state)
 
 def reorder_playlist(ctx, token, state, playlist_id):

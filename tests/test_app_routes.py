@@ -351,5 +351,56 @@ class AppRoutesTests(ContextTestCase):
         self.assertIn(b"Invalid settings", response.data)
 
 
+class SchedulerJitterTests(unittest.TestCase):
+    """MusicBrainz asks apps not to all fire at the same instant.
+
+    Deployments sharing a cron expression otherwise hit the API together on the
+    same second, which is called out as grounds for blocking an application.
+    """
+
+    def _trigger(self, cron_expr, jitter_seconds):
+        """Build the trigger _start_scheduler would register, without a scheduler."""
+        from apscheduler.triggers.cron import CronTrigger
+        from app import _validate_cron_schedule
+        minute, hour, day, month, dow = _validate_cron_schedule(cron_expr)
+        return CronTrigger(minute=minute, hour=hour, day=day, month=month,
+                           day_of_week=dow, jitter=jitter_seconds, timezone="UTC")
+
+    def _now(self):
+        import datetime
+        return datetime.datetime.now(datetime.timezone.utc)
+
+    def test_default_schedule_is_jittered(self):
+        import app
+        self.assertGreater(app.SCHEDULE_JITTER_SECONDS, 0,
+                           "the default schedule must not fire every instance in lockstep")
+
+    def test_jitter_actually_moves_the_fire_time(self):
+        trigger = self._trigger("0 6 * * *", 900)
+        now = self._now()
+        fire_times = {trigger.get_next_fire_time(None, now) for _ in range(50)}
+        self.assertGreater(len(fire_times), 1,
+                           "a jittered trigger should not land on one fixed instant")
+        base = self._trigger("0 6 * * *", 0)
+        self.assertEqual(base.get_next_fire_time(None, now).minute, 0)
+
+    def test_jitter_can_be_disabled(self):
+        trigger = self._trigger("0 6 * * *", 0)
+        now = self._now()
+        self.assertEqual(trigger.get_next_fire_time(None, now),
+                         trigger.get_next_fire_time(None, now))
+
+    def test_jitter_stays_within_the_configured_window(self):
+        import app
+        trigger = self._trigger("0 6 * * *", app.SCHEDULE_JITTER_SECONDS)
+        now = self._now()
+        anchor = self._trigger("0 6 * * *", 0).get_next_fire_time(None, now)
+        for _ in range(20):
+            fire = trigger.get_next_fire_time(None, now)
+            delta = (fire - anchor).total_seconds()
+            self.assertGreaterEqual(delta, 0)
+            self.assertLessEqual(delta, app.SCHEDULE_JITTER_SECONDS)
+
+
 if __name__ == "__main__":
     unittest.main()

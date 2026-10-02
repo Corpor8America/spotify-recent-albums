@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import spotify_core as core
+import spotify_core.musicbrainz as mb_module
 from spotify_core.models import Artist, MusicBrainzAlbum, State
 from tests.mock_musicbrainz_server import MockMusicBrainzServer
 from tests.support import ContextTestCase
@@ -28,6 +29,9 @@ class MockMusicBrainzTestCase(unittest.TestCase):
 
     def setUp(self):
         self.server.reset()
+        # The circuit breaker is process-wide, so a test that simulates an
+        # outage would otherwise suppress every test that runs after it.
+        mb_module.reset_rate_limit_state()
         self._base_url_patcher = patch(
             "spotify_core.musicbrainz._MB_BASE_URL", self.server.base_url
         )
@@ -39,6 +43,7 @@ class MockMusicBrainzTestCase(unittest.TestCase):
     def tearDown(self):
         self._rate_limit_patcher.stop()
         self._base_url_patcher.stop()
+        mb_module.reset_rate_limit_state()
 
 
 class ResolveSpotifyToMbIntegrationTests(MockMusicBrainzTestCase):

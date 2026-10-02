@@ -172,7 +172,8 @@ def create_app():
             connected=core.is_connected(),
             playlist_id=c["spotify_playlist_id"],
             report_albums=core.get_report_albums(state, c["days_lookback"]),
-            excluded_albums=core.get_excluded_albums(state),
+            excluded_albums=core.get_excluded_albums(state, c["days_lookback"]),
+            expired_albums=core.get_expired_albums(state, c["days_lookback"]),
             in_progress=state.in_progress,
             rate_limits={
                 cat: format_rate_limit_until(ts)
@@ -252,6 +253,20 @@ def create_app():
         known = core.apply_musicbrainz_override(release_group_id, value)
         if not known:
             return "Unknown MusicBrainz release", 404
+        return redirect(url_for("dashboard"))
+
+    @app.route("/albums/<album_id>/promote", methods=["POST"])
+    def promote_expired_album(album_id):
+        status, error = playlists.promote_expired(album_id)
+        if status is not None:
+            return error, status
+        return redirect(url_for("dashboard"))
+
+    @app.route("/albums/<album_id>/expire", methods=["POST"])
+    def return_album_to_expired(album_id):
+        status, error = playlists.return_to_expired(album_id)
+        if status is not None:
+            return error, status
         return redirect(url_for("dashboard"))
 
     # --- Followed Artists --------------------------------------------------------

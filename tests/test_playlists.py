@@ -1,10 +1,21 @@
 import unittest
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import spotify_core as core
+from spotify_core.errors import RateLimitError
 from spotify_core.models import Album, MusicBrainzAlbum, State
 from tests.support import ContextTestCase
 
+
+def days_ago(days):
+    return (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+# Release dates are relative to "now" because prune buckets albums by age:
+# EXPIRED is inside retention but past the cutoff, RETIRED is past retention.
+EXPIRED = 400
+RETIRED = 900
 
 def make_album(album_id, name, release_date, added=False, track_uris=None,
                auto_excluded=False, manual_override=None):
@@ -19,7 +30,7 @@ def make_album(album_id, name, release_date, added=False, track_uris=None,
 class PrunePlaylistTests(ContextTestCase):
     def test_removes_aged_out_album_tracks(self):
         state = State(known_albums={
-            "alb1": make_album("alb1", "Old Album", "2020-01-01",
+            "alb1": make_album("alb1", "Old Album", (datetime.now() - timedelta(days=500)).strftime("%Y-%m-%d"),
                                added=True, track_uris=["spotify:track:a", "spotify:track:b"]),
         })
         calls = []
@@ -31,9 +42,9 @@ class PrunePlaylistTests(ContextTestCase):
 
     def test_shared_track_is_not_removed(self):
         state = State(known_albums={
-            "old": make_album("old", "Old", "2020-01-01", added=True,
+            "old": make_album("old", "Old", days_ago(EXPIRED), added=True,
                               track_uris=["spotify:track:shared", "spotify:track:only_old"]),
-            "current": make_album("current", "Current", "2026-07-01", added=True,
+            "current": make_album("current", "Current", days_ago(10), added=True,
                                   track_uris=["spotify:track:shared"]),
         })
         calls = []
@@ -41,10 +52,14 @@ class PrunePlaylistTests(ContextTestCase):
                           side_effect=lambda ctx, t, p, uris, s: calls.append(uris)):
             core.prune_playlist("token", state, 365, "playlist123")
         self.assertEqual(calls, [["spotify:track:only_old"]])
+        # aged out, but still tracked so the dashboard can list it
+        self.assertIn("old", state.known_albums)
+        self.assertFalse(state.known_albums["old"].added_to_playlist)
+        self.assertEqual(state.known_albums["old"].track_uris, [])
 
     def test_missing_track_uris_falls_back_to_fetch(self):
         state = State(known_albums={
-            "alb1": make_album("alb1", "Old Album", "2020-01-01", added=True),
+            "alb1": make_album("alb1", "Old Album", days_ago(EXPIRED), added=True),
         })
         with patch.object(core.playlists, "get_album_track_uris",
                           return_value=["spotify:track:fetched"]) as fetch_mock, \
@@ -56,7 +71,7 @@ class PrunePlaylistTests(ContextTestCase):
 
     def test_no_playlist_id_is_noop(self):
         state = State(known_albums={
-            "alb1": make_album("alb1", "X", "2020-01-01", added=True, track_uris=["u"]),
+            "alb1": make_album("alb1", "X", days_ago(RETIRED), added=True, track_uris=["u"]),
         })
         with patch.object(core.playlists, "remove_tracks_from_playlist") as remove_mock:
             core.prune_playlist("token", state, 365, None)
@@ -64,7 +79,7 @@ class PrunePlaylistTests(ContextTestCase):
 
     def test_not_yet_expired_album_is_untouched(self):
         state = State(known_albums={
-            "alb1": make_album("alb1", "X", "2026-07-01", added=True, track_uris=["u"]),
+            "alb1": make_album("alb1", "X", days_ago(10), added=True, track_uris=["u"]),
         })
         with patch.object(core.playlists, "remove_tracks_from_playlist") as remove_mock:
             core.prune_playlist("token", state, 365, "playlist123")
@@ -72,7 +87,7 @@ class PrunePlaylistTests(ContextTestCase):
 
     def test_manually_excluded_album_is_pruned(self):
         state = State(known_albums={
-            "alb1": make_album("alb1", "Live Album (Live)", "2026-07-01", added=True,
+            "alb1": make_album("alb1", "Live Album (Live)", days_ago(10), added=True,
                                track_uris=["spotify:track:x"], manual_override=True),
         })
         calls = []
@@ -84,7 +99,7 @@ class PrunePlaylistTests(ContextTestCase):
 
     def test_manually_included_album_is_not_pruned(self):
         state = State(known_albums={
-            "alb1": make_album("alb1", "Live Album (Live)", "2026-07-01", added=True,
+            "alb1": make_album("alb1", "Live Album (Live)", days_ago(10), added=True,
                                track_uris=["spotify:track:x"],
                                auto_excluded=True, manual_override=False),
         })
@@ -94,10 +109,10 @@ class PrunePlaylistTests(ContextTestCase):
 
     def test_shared_track_excluded_and_current(self):
         state = State(known_albums={
-            "excluded": make_album("excluded", "Live (Live)", "2026-07-01", added=True,
+            "excluded": make_album("excluded", "Live (Live)", days_ago(10), added=True,
                                    track_uris=["spotify:track:shared", "spotify:track:only_excluded"],
                                    manual_override=True),
-            "current": make_album("current", "Current", "2026-07-01", added=True,
+            "current": make_album("current", "Current", days_ago(10), added=True,
                                   track_uris=["spotify:track:shared"]),
         })
         calls = []
@@ -105,6 +120,99 @@ class PrunePlaylistTests(ContextTestCase):
                           side_effect=lambda ctx, t, p, uris, s: calls.append(uris)):
             core.prune_playlist("token", state, 365, "playlist123")
         self.assertEqual(calls, [["spotify:track:only_excluded"]])
+
+
+class RetireAlbumTests(ContextTestCase):
+    """Albums past their retention window are removed and forgotten."""
+
+    def test_retired_album_is_removed_from_state(self):
+        state = State(known_albums={
+            "old": make_album("old", "Old", days_ago(RETIRED), added=True,
+                              track_uris=["spotify:track:a"]),
+        })
+        calls = []
+        with patch.object(core.playlists, "remove_tracks_from_playlist",
+                          side_effect=lambda ctx, t, p, uris, s: calls.append(uris)):
+            core.prune_playlist("token", state, 365, "playlist123")
+        self.assertEqual(calls, [["spotify:track:a"]])
+        self.assertNotIn("old", state.known_albums)
+
+    def test_retired_album_keeps_tracks_a_surviving_album_shares(self):
+        state = State(known_albums={
+            "retired": make_album("retired", "Retired", days_ago(RETIRED), added=True,
+                                  track_uris=["spotify:track:shared", "spotify:track:only_old"]),
+            "current": make_album("current", "Current", days_ago(10), added=True,
+                                  track_uris=["spotify:track:shared"]),
+        })
+        calls = []
+        with patch.object(core.playlists, "remove_tracks_from_playlist",
+                          side_effect=lambda ctx, t, p, uris, s: calls.append(uris)):
+            core.prune_playlist("token", state, 365, "playlist123")
+        self.assertEqual(calls, [["spotify:track:only_old"]])
+        self.assertNotIn("retired", state.known_albums)
+        self.assertIn("current", state.known_albums)
+
+    def test_promoted_album_is_retired_once_retention_closes(self):
+        """Promotion buys time, not permanence."""
+        state = State(known_albums={
+            "p": make_album("p", "Promoted", days_ago(RETIRED), added=True,
+                            track_uris=["spotify:track:a"], manual_override=False),
+        })
+        with patch.object(core.playlists, "remove_tracks_from_playlist"), \
+                patch.object(core.state, "save_state"):
+            core.prune_playlist("token", state, 365, "playlist123")
+        self.assertNotIn("p", state.known_albums)
+
+    def test_promoted_but_still_inside_retention_is_kept_in_playlist(self):
+        state = State(known_albums={
+            "p": make_album("p", "Promoted", days_ago(EXPIRED), added=True,
+                            track_uris=["spotify:track:a"], manual_override=False),
+        })
+        with patch.object(core.playlists, "remove_tracks_from_playlist") as remove_mock:
+            core.prune_playlist("token", state, 365, "playlist123")
+        remove_mock.assert_not_called()
+        self.assertTrue(state.known_albums["p"].added_to_playlist)
+
+    def test_retention_floor_stops_a_tiny_lookback_dropping_albums(self):
+        """lookback=1 -> retention floors to 30 days, so a 10-day-old album
+        is expired rather than retired."""
+        state = State(known_albums={
+            "a": make_album("a", "A", days_ago(10), added=True, track_uris=["t:a"]),
+        })
+        calls = []
+        with patch.object(core.playlists, "remove_tracks_from_playlist",
+                          side_effect=lambda ctx, t, p, uris, s: calls.append(uris)):
+            core.prune_playlist("token", state, 1, "playlist123")
+        self.assertEqual(calls, [["t:a"]])
+        self.assertIn("a", state.known_albums)
+        self.assertFalse(state.known_albums["a"].added_to_playlist)
+
+    def test_rate_limit_propagates_instead_of_retrying(self):
+        """A 429 must abort the prune, not be swallowed and retried against the
+        same blocked endpoint."""
+        for date_offset in (RETIRED, EXPIRED):
+            with self.subTest(days=date_offset):
+                state = State(known_albums={
+                    "a": make_album("a", "A", days_ago(date_offset), added=True,
+                                    track_uris=["t:a"]),
+                })
+                with patch.object(core.playlists, "remove_tracks_from_playlist",
+                                  side_effect=RateLimitError("playlist", 9999999999)), \
+                        patch.object(core.state, "save_state"), \
+                        self.assertRaises(RateLimitError):
+                    core.prune_playlist("token", state, 365, "playlist123")
+                self.assertIn("a", state.known_albums)
+
+    def test_removal_failure_keeps_the_album_tracked(self):
+        state = State(known_albums={
+            "a": make_album("a", "A", days_ago(RETIRED), added=True,
+                            track_uris=["t:a"]),
+        })
+        with patch.object(core.playlists, "remove_tracks_from_playlist",
+                          side_effect=Exception("boom")), \
+                patch.object(core.state, "save_state"):
+            core.prune_playlist("token", state, 365, "playlist123")
+        self.assertIn("a", state.known_albums)
 
 
 class ReorderPlaylistTests(ContextTestCase):

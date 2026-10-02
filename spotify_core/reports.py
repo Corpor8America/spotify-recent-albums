@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta
 
-from .filters import is_effectively_excluded, parse_release_date
+from .filters import is_effectively_excluded, is_expired, parse_release_date
 from .models import Album
 
 
@@ -44,9 +44,22 @@ def get_report_albums(state, days):
     return mb_albums + result
 
 
-def get_excluded_albums(state):
-    result = [a for a in state.known_albums.values() if is_effectively_excluded(a)]
+def get_excluded_albums(state, days):
+    """Effectively excluded albums, minus any that are also in the Expired
+    stage -- those render in the Expired table with their own actions."""
+    result = [
+        a for a in state.known_albums.values()
+        if is_effectively_excluded(a) and not is_expired(a, days)
+    ]
     result.sort(key=lambda a: a.release_date or "", reverse=True)
+    return result
+
+
+def get_expired_albums(state, days):
+    """Albums that have aged out of the playlist but are still inside their
+    retention window, oldest first."""
+    result = [a for a in state.known_albums.values() if is_expired(a, days)]
+    result.sort(key=lambda a: parse_release_date(a.release_date))
     return result
 
 

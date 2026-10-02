@@ -30,6 +30,12 @@ class ScanService:
 
 
 class PlaylistService:
+    """Playlist mutations triggered from the web UI.
+
+    Mutating methods return ``(status, error)``: ``(None, None)`` on success,
+    otherwise an HTTP status and the message to show. Statuses live here so
+    routes stay thin dispatchers.
+    """
 
     def apply_override(self, album_id, value):
         """Apply a manual include/exclude override. Returns False when the
@@ -91,3 +97,80 @@ class PlaylistService:
                 core.run_lock.release()
         finally:
             core.reorder_lock.release()
+
+    def promote_expired(self, album_id):
+        """Add an expired album back to the main playlist. It keeps its expired
+        listing (so it can be taken out again later) and is protected from
+        expiry only until its retention window closes."""
+        if not core.is_connected():
+            return 400, "Not connected to Spotify"
+        if self._expired_album(album_id) is None:
+            return 404, "Unknown expired album"
+        if not self.apply_override(album_id, "false"):
+            return 404, "Unknown album"
+        return None, None
+
+    def return_to_expired(self, album_id):
+        """Take an expired album back out of the main playlist and clear its
+        promotion, leaving it listed under Expired."""
+        if not core.is_connected():
+            return 400, "Not connected to Spotify"
+        c = core.load_config()
+        album = self._expired_album(album_id, c)
+        if album is None:
+            return 404, "Unknown expired album"
+        if not album.added_to_playlist:
+            return self._clear_promotion(album_id)
+
+        # Playlist edits must not overlap a scan: a scan holds one state
+        # snapshot and saves it repeatedly for the whole run, so a concurrent
+        # write here would either be clobbered or would clobber the scan.
+        if not core.run_lock.acquire(blocking=False):
+            return 409, "A scan is running -- try again in a moment"
+        try:
+            state = core.load_state()
+            entry = state.known_albums.get(album_id)
+            if entry is None or not entry.added_to_playlist:
+                return self._clear_promotion(album_id)
+            if not c.get("spotify_playlist_id"):
+                return 400, "No playlist configured"
+            try:
+                token = core.get_access_token(
+                    c["spotify_client_id"], c["spotify_client_secret"],
+                    core.load_refresh_token())
+                uris = entry.track_uris or core.get_album_track_uris(album_id, state)
+                if uris:
+                    core.remove_tracks_from_playlist(
+                        token, c["spotify_playlist_id"], uris, state)
+            except Exception as e:
+                # Leave the entry untouched: clearing added_to_playlist while
+                # the tracks are still on the playlist would make state lie.
+                core.log(f"ERROR returning '{entry.name}' to expired: {e}")
+                return 502, "Could not update the playlist due to an internal error"
+        finally:
+            core.run_lock.release()
+        return self._clear_promotion(album_id)
+
+    @staticmethod
+    def _clear_promotion(album_id):
+        """Atomically drop the album back to the Expired stage."""
+        def _mutate(s):
+            entry = s.known_albums.get(album_id)
+            if entry is None:
+                return None
+            entry.added_to_playlist = False
+            entry.track_uris = []
+            entry.manual_override = None
+            return s
+
+        core.update_state(_mutate)
+        return None, None
+
+    @staticmethod
+    def _expired_album(album_id, config=None):
+        """The album, if it currently sits in the Expired stage."""
+        c = config if config is not None else core.load_config()
+        album = core.load_state().known_albums.get(album_id)
+        if album is None or not core.is_expired(album, c["days_lookback"]):
+            return None
+        return album

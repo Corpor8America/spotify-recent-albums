@@ -54,6 +54,32 @@ _SEED_CONFIG = json.loads(CONFIG_FILE.read_text())
 _SEED_STATE = {"artists": {}, "known_albums": {}, "in_progress": None, "rate_limits": {}}
 _SEED_TOKEN = {"refresh_token": "mock-refresh-token"}
 
+# The app container writes through the bind mount on ./tests/seed, so every
+# stateful test rewrites these tracked files.  Capture the checked-in bytes at
+# import time (before any test can touch them) so tearDownClass can put the
+# working tree back exactly as it was.
+_SEED_FILES = ("spotify-state.json", "spotify-token.json", "app-config.json")
+_ORIGINAL_SEED_BYTES = {
+    name: (SEED_DIR / name).read_bytes()
+    for name in _SEED_FILES
+    if (SEED_DIR / name).exists()
+}
+
+
+def _write_seed_file(name, data):
+    """Replace a seed file.  The app container (root) may have created
+    root-owned copies in the bind mount, which the test runner cannot open
+    for writing; unlink first since deletion only needs directory write
+    permission."""
+    fpath = SEED_DIR / name
+    if fpath.exists():
+        fpath.unlink()
+    if isinstance(data, bytes):
+        fpath.write_bytes(data)
+    else:
+        fpath.write_text(json.dumps(data))
+
+
 MOCK_PLAYLIST_ID = "mockplaylistid12345"
 TRACK_PREFIX = "spotify:track:album_"
 
@@ -64,6 +90,27 @@ class DockerIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.session = requests.Session()
+
+    @classmethod
+    def tearDownClass(cls):
+        """Leave the working tree clean.
+
+        The app container persists state through the ./tests/seed bind mount,
+        so without this every run leaves tests/seed/*.json modified in git.
+        Also return the mock server to its defaults so a following run (or a
+        manual poke at the stack) starts from a known state.
+        """
+        for name, raw in _ORIGINAL_SEED_BYTES.items():
+            _write_seed_file(name, raw)
+        try:
+            cls.session.post(f"{MOCK_URL}/_control/reset_quota", timeout=10)
+            cls.session.post(f"{MOCK_URL}/_control/reset_playlist", timeout=10)
+            cls.session.post(
+                f"{MOCK_URL}/_control/configure",
+                json={"followed_artist_ids": None}, timeout=10,
+            )
+        except requests.RequestException:
+            pass
 
     # --- basic reachability ------------------------------------------------
 
@@ -308,6 +355,37 @@ class DockerIntegrationTests(unittest.TestCase):
         self.assertIs(album["auto_excluded"], True)
         self.assertIs(album["added_to_playlist"], False)
 
+    def test_unfollowed_artists_are_removed_from_state_and_playlist(self):
+        """Unfollowing an artist must drop their albums from state and their
+        tracks from the playlist on the next scan, while the artists still
+        followed keep theirs."""
+        self._reset_app_state()
+        self._mock_reset()
+        self._run_scan_and_wait()
+
+        before = self._playlist_items()
+        self.assertEqual(len(before), 6 * 10)  # 6 artists, 1 album x 10 tracks
+
+        kept_artist = "a000000000000000000001"
+        dropped_artist = "a000000000000000000002"
+        kept_album = "album_a000000000000000000001_000"
+        dropped_album = "album_a000000000000000000002_000"
+
+        # Unfollow five of the six artists and rescan.
+        self._mock_configure(followed_artist_ids=[kept_artist])
+        self._run_scan_and_wait()
+
+        items = self._playlist_items()
+        self.assertIn(f"spotify:track:{kept_album}_00", items)
+        self.assertNotIn(f"spotify:track:{dropped_album}_00", items)
+        self.assertEqual(len(items), 10)
+
+        state = self._read_state()
+        self.assertEqual(sorted(state["artists"]), [kept_artist])
+        self.assertEqual(sorted(state["known_albums"]), [kept_album])
+        self.assertNotIn(dropped_artist, state["artists"])
+        self.assertNotIn(dropped_album, state["known_albums"])
+
     def test_rate_limit_lockout_stops_scan(self):
         """A long 429 (simulated dev-mode daily quota) must stop the scan and
         record the blocked category in /status rate_limits."""
@@ -388,6 +466,7 @@ class DockerIntegrationTests(unittest.TestCase):
             per_category_quota={},
             artist_release_dates={},
             paren_album_artists=[],
+            followed_artist_ids=None,
         )
         self.session.post(f"{MOCK_URL}/_control/reset_quota", timeout=10)
         self.session.post(f"{MOCK_URL}/_control/reset_playlist", timeout=10)
@@ -421,14 +500,7 @@ class DockerIntegrationTests(unittest.TestCase):
         self._write_seed("spotify-state.json", state)
 
     def _write_seed(self, name, data):
-        """Replace a seed file.  The app container (root) may have created
-        root-owned copies in the bind mount, which the CI runner cannot open
-        for writing; unlink first since deletion only needs directory write
-        permission."""
-        fpath = SEED_DIR / name
-        if fpath.exists():
-            fpath.unlink()
-        fpath.write_text(json.dumps(data))
+        _write_seed_file(name, data)
 
     def _reset_app_state(self):
         """Restore the app's persisted state to the seed files.  Waits for

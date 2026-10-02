@@ -801,3 +801,52 @@ class RunScanWiringTests(ContextTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class RecordNewAlbumsRetentionTests(ContextTestCase):
+    """Scan-time classification must agree with prune-time classification:
+    retention is measured from now (2x the age limit, floored at 30 days), not
+    from the already-aged cutoff."""
+
+    DAYS = 365
+    RETENTION = 730
+
+    def _record(self, albums, days_lookback=None):
+        days = days_lookback or self.DAYS
+        now = datetime.now()
+        state = State()
+        with patch("spotify_core.scan.get_album_track_uris", return_value=[]), \
+             patch("spotify_core.scan.add_tracks_to_playlist"):
+            core.scan._record_new_albums(
+                self.ctx, "token", state, artist_payload("art1", "Artist"),
+                albums, now - timedelta(days=days), None,
+                "2026-09-29T00:00:00+00:00", days, now,
+            )
+        return state
+
+    def _age(self, days):
+        return (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    def test_album_just_inside_retention_is_recorded(self):
+        """Regression: retention must not be charged twice. This album is past
+        the age limit but inside 2x it, so prune still tracks it."""
+        state = self._record([album_payload("sp1", "Inside Retention", self._age(600))])
+        self.assertIn("sp1", state.known_albums)
+
+    def test_album_past_retention_is_skipped(self):
+        state = self._record([album_payload("sp1", "Too Old", self._age(800))])
+        self.assertNotIn("sp1", state.known_albums)
+
+    def test_retention_floor_applies_for_small_age_limits(self):
+        """With a 5-day age limit retention is still 30 days."""
+        state = self._record([album_payload("sp1", "Twenty Days Old", self._age(20))],
+                             days_lookback=5)
+        self.assertIn("sp1", state.known_albums)
+
+        state = self._record([album_payload("sp2", "Forty Days Old", self._age(40))],
+                             days_lookback=5)
+        self.assertNotIn("sp2", state.known_albums)
+
+    def test_aged_out_album_is_recorded_but_not_added(self):
+        state = self._record([album_payload("sp1", "Aged Out", self._age(400))])
+        self.assertIn("sp1", state.known_albums)
+        self.assertFalse(state.known_albums["sp1"].added_to_playlist)

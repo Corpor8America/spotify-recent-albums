@@ -1,13 +1,20 @@
 """Playlist operations: track sync, pruning, reordering, creation,
 and the manual include/exclude override flow."""
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from . import auth as auth_mod
 from . import config as config_mod
 from . import state as state_mod
 from .api import spotify_get, spotify_request
-from .filters import is_effectively_excluded, parse_release_date
+from .errors import RateLimitError
+from .filters import (
+    is_aged_out,
+    is_effectively_excluded,
+    is_past_retention,
+    is_promoted,
+    parse_release_date,
+)
 from .logging import log
 from .models import State
 
@@ -106,90 +113,110 @@ def remove_tracks_from_playlist(ctx, token, playlist_id, track_uris, state):
         spotify_request(ctx, "DELETE", token, url, state, json_data={"items": items})
 
 
-def prune_playlist(ctx, token, state, days, playlist_id):
-    """Move aged albums to Expired and permanently drop them after retention."""
-    now = datetime.now()
-    expiration_cutoff = now - timedelta(days=days)
-    retention_cutoff = now - timedelta(days=days * 2)
+def _shared_track_guard(state, album_id):
+    """URIs of every other album still in the playlist. Used so a removal
+    never strips a track another album still needs."""
+    return {
+        uri
+        for other_id, other in state.known_albums.items()
+        if other_id != album_id and other.added_to_playlist
+        for uri in (other.track_uris or [])
+    }
 
-    if not playlist_id:
-        return
 
-    # First remove albums that have reached the end of their retention window.
-    # Keep shared tracks if another album still in the playlist uses them.
-    permanent_ids = []
-    for album_id, album in state.known_albums.items():
-        release_date = parse_release_date(album.release_date)
-        if release_date is not None and release_date < retention_cutoff:
-            permanent_ids.append(album_id)
+def _album_track_uris(ctx, token, album_id, state):
+    """Stored track URIs, falling back to a Spotify fetch. Returns None when
+    the tracks can't be read, so callers skip the album this pass."""
+    album = state.known_albums[album_id]
+    if album.track_uris:
+        return album.track_uris
+    try:
+        return get_album_track_uris(ctx, token, album_id, state)
+    except RateLimitError:
+        raise
+    except Exception as e:
+        log(f"  ERROR fetching tracks for '{album.name}': {e}")
+        return None
 
-    for album_id in permanent_ids:
+
+def _retire_albums(ctx, token, state, days, playlist_id):
+    """Drop albums whose retention window has closed: remove their tracks
+    (keeping any a surviving album shares) and forget them entirely."""
+    retire_ids = [
+        album_id for album_id, album in state.known_albums.items()
+        if is_past_retention(album, days)
+    ]
+    for album_id in retire_ids:
         album = state.known_albums[album_id]
+        was_promoted = is_promoted(album)
         if album.added_to_playlist:
-            other_uris = {
-                uri
-                for other_id, other in state.known_albums.items()
-                if other_id != album_id and other.added_to_playlist
-                for uri in (other.track_uris or [])
-            }
-            track_uris = album.track_uris
-            if not track_uris:
-                try:
-                    track_uris = get_album_track_uris(ctx, token, album_id, state)
-                except Exception as e:
-                    log(f"  ERROR fetching tracks for expired '{album.name}': {e}")
-                    continue
-            to_remove = [uri for uri in track_uris if uri not in other_uris]
+            track_uris = _album_track_uris(ctx, token, album_id, state)
+            if track_uris is None:
+                continue
+            to_remove = [uri for uri in track_uris if uri not in _shared_track_guard(state, album_id)]
             if to_remove:
                 try:
                     remove_tracks_from_playlist(ctx, token, playlist_id, to_remove, state)
+                    log(f"  Removed {len(to_remove)} track(s) from retired '{album.name}'")
+                except RateLimitError:
+                    raise
                 except Exception as e:
-                    log(f"  ERROR removing expired '{album.name}' from playlist: {e}")
+                    log(f"  ERROR removing retired '{album.name}' from playlist: {e}")
                     continue
         del state.known_albums[album_id]
         state_mod.save_state(ctx, state)
+        if was_promoted:
+            log(f"  Retired '{album.name}' -- retention window closed, "
+                "even though it had been promoted.")
+        else:
+            log(f"  Retired '{album.name}' -- past its retention window.")
 
-    # Move aged albums out of the main playlist unless explicitly promoted.
-    removal_ids = []
+
+def _expire_albums(ctx, token, state, days, playlist_id):
+    """Move aged-out albums into the Expired stage: remove their tracks but
+    keep the entry so the dashboard can still list (and re-promote) it."""
+    removal_ids = [
+        album_id for album_id, album in state.known_albums.items()
+        if album.added_to_playlist and is_aged_out(album, days)
+    ]
+    if not removal_ids:
+        return
+
     keep_uris = {
         uri
         for album in state.known_albums.values()
-        if album.added_to_playlist
-        and not (
-            (release := parse_release_date(album.release_date)) is not None
-            and release < expiration_cutoff
-            and album.manual_override is not False
-        )
-        and not is_effectively_excluded(album)
+        if album.added_to_playlist and not is_aged_out(album, days)
         for uri in (album.track_uris or [])
     }
-    for album_id, album in state.known_albums.items():
-        if not album.added_to_playlist:
-            continue
-        release_date = parse_release_date(album.release_date)
-        aged_out = release_date is not None and release_date < expiration_cutoff
-        if (aged_out and album.manual_override is not False) or is_effectively_excluded(album):
-            removal_ids.append(album_id)
+    log(f"Expiring {len(removal_ids)} album(s) from the playlist (aged out or excluded)...")
 
     for album_id in removal_ids:
         album = state.known_albums[album_id]
-        track_uris = album.track_uris
-        if not track_uris:
-            try:
-                track_uris = get_album_track_uris(ctx, token, album_id, state)
-            except Exception as e:
-                log(f"  ERROR fetching tracks for '{album.name}' during prune: {e}")
-                continue
+        track_uris = _album_track_uris(ctx, token, album_id, state)
+        if track_uris is None:
+            continue
         to_remove = [uri for uri in track_uris if uri not in keep_uris]
         if to_remove:
             try:
                 remove_tracks_from_playlist(ctx, token, playlist_id, to_remove, state)
+                log(f"  Removed {len(to_remove)} track(s) from '{album.name}'")
+            except RateLimitError:
+                raise
             except Exception as e:
                 log(f"  ERROR removing '{album.name}' from playlist: {e}")
                 continue
         album.added_to_playlist = False
         album.track_uris = []
         state_mod.save_state(ctx, state)
+
+
+def prune_playlist(ctx, token, state, days, playlist_id):
+    """Retire albums past their retention window, then expire the ones that
+    just aged out. RateLimitError propagates so the caller can abort."""
+    if not playlist_id:
+        return
+    _retire_albums(ctx, token, state, days, playlist_id)
+    _expire_albums(ctx, token, state, days, playlist_id)
 
 
 def reorder_playlist(ctx, token, state, playlist_id):

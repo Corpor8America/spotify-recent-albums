@@ -8,7 +8,7 @@ APScheduler background thread are only created by ``create_app()``
 import os
 import re
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -108,15 +108,6 @@ def _format_last_checked(iso_str):
     return dt.strftime("%Y-%m-%d")
 
 
-def _is_expired_album(album, days_lookback):
-    release_date = core.parse_release_date(album.release_date)
-    if release_date is None:
-        return False
-    now = datetime.now()
-    cutoff = now - timedelta(days=days_lookback)
-    retention_cutoff = now - timedelta(days=days_lookback * 2)
-    return retention_cutoff <= release_date < cutoff
-
 def create_app():
     """Application factory: builds the Flask app and starts the scheduler."""
     app = Flask(__name__)
@@ -181,8 +172,8 @@ def create_app():
             connected=core.is_connected(),
             playlist_id=c["spotify_playlist_id"],
             report_albums=core.get_report_albums(state, c["days_lookback"]),
-            excluded_albums=core.get_excluded_albums(state),
-            expired_albums=sorted((a for a in state.known_albums.values() if _is_expired_album(a, c["days_lookback"])), key=lambda a: a.release_date),
+            excluded_albums=core.get_excluded_albums(state, c["days_lookback"]),
+            expired_albums=core.get_expired_albums(state, c["days_lookback"]),
             in_progress=state.in_progress,
             rate_limits={
                 cat: format_rate_limit_until(ts)
@@ -266,35 +257,16 @@ def create_app():
 
     @app.route("/albums/<album_id>/promote", methods=["POST"])
     def promote_expired_album(album_id):
-        state = core.load_state()
-        album = state.known_albums.get(album_id)
-        if not album or not _is_expired_album(album, cfg()["days_lookback"]):
-            return "Unknown expired album", 404
-        if not core.is_connected():
-            return "Not connected to Spotify", 400
-        known = playlists.apply_override(album_id, "false")
-        if not known:
-            return "Unknown album", 404
+        status, error = playlists.promote_expired(album_id)
+        if status is not None:
+            return error, status
         return redirect(url_for("dashboard"))
 
     @app.route("/albums/<album_id>/expire", methods=["POST"])
     def return_album_to_expired(album_id):
-        state = core.load_state()
-        album = state.known_albums.get(album_id)
-        if not album or not _is_expired_album(album, cfg()["days_lookback"]):
-            return "Unknown expired album", 404
-        if album.added_to_playlist:
-            cfg_value = cfg()
-            token = core.get_access_token(
-                cfg_value["spotify_client_id"], cfg_value["spotify_client_secret"],
-                core.load_refresh_token())
-            uris = album.track_uris or core.get_album_track_uris(album_id, state)
-            if uris:
-                core.remove_tracks_from_playlist(token, cfg_value["spotify_playlist_id"], uris, state)
-        album.added_to_playlist = False
-        album.track_uris = []
-        album.manual_override = None
-        core.save_state(state)
+        status, error = playlists.return_to_expired(album_id)
+        if status is not None:
+            return error, status
         return redirect(url_for("dashboard"))
 
     # --- Followed Artists --------------------------------------------------------

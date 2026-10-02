@@ -19,7 +19,13 @@ from .api import (
 from .artists import get_artist_albums, get_due_artists, get_followed_artists
 from .auth import get_access_token, load_refresh_token
 from .config import CHECK_INTERVAL_DAYS, DEFAULT_DAYS_LOOKBACK, get_version, load_config
-from .filters import is_auto_excluded, is_effectively_excluded, parse_release_date
+from .filters import (
+    is_auto_excluded,
+    is_effectively_excluded,
+    is_promoted,
+    parse_release_date,
+    retention_days,
+)
 from .logging import clear_logs, log, log_exception
 from .models import Album, Artist, MusicBrainzAlbum, ScanProgress
 from .musicbrainz import MB_ACTIVE_REFRESH_DAYS, get_artist_status_and_release_groups, resolve_spotify_to_mb
@@ -419,7 +425,8 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
     skip_ids = set(skip_ids or ())
     cfg = load_config(ctx)
     verbose = cfg.get("verbose_logging", False)
-    cutoff = datetime.now() - timedelta(days=days)
+    now = datetime.now()
+    cutoff = now - timedelta(days=days)
     now_iso = datetime.now(timezone.utc).isoformat()
     any_new_albums = False
     try:
@@ -460,7 +467,7 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
 
             log(f"    Retrieved {len(albums)} album(s)")
             new_count = _record_new_albums(ctx, token, state, artist, albums, cutoff,
-                                           playlist_id, now_iso, days)
+                                           playlist_id, now_iso, days, now)
             if _remove_checked_musicbrainz_upcoming(state, artist):
                 save_state(ctx, state)
             if new_count:
@@ -485,8 +492,22 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
     return any_new_albums
 
 
-def _record_new_albums(ctx, token, state, artist, albums, cutoff, playlist_id, now_iso, days_lookback=DEFAULT_DAYS_LOOKBACK):
+def _record_new_albums(ctx, token, state, artist, albums, cutoff, playlist_id, now_iso,
+                      days_lookback=DEFAULT_DAYS_LOOKBACK, now=None):
+    """Record the albums returned for one artist.
+
+    An album is skipped outright once its retention window has closed. One that
+    has already aged out is recorded but not pushed to the playlist, unless it
+    is still promoted -- in which case the add is retried here, so a promotion
+    whose playlist sync failed heals on the next scan.
+    """
     new_count = 0
+    # ``cutoff`` is already ``now - days_lookback``, so retention has to be
+    # measured from ``now``: ``now - retention_days(...)``, not
+    # ``cutoff - retention_days(...)`` (which would charge the age limit twice).
+    if now is None:
+        now = cutoff + timedelta(days=days_lookback)
+    retention_cutoff = now - timedelta(days=retention_days(days_lookback))
     for album in albums:
         if album["album_type"] != "album":
             continue
@@ -494,15 +515,17 @@ def _record_new_albums(ctx, token, state, artist, albums, cutoff, playlist_id, n
         if artist["id"] not in artist_ids:
             continue
         release_date = parse_release_date(album["release_date"])
-        retention_cutoff = cutoff - timedelta(days=days_lookback)
         if release_date and release_date < retention_cutoff:
             continue
 
         is_unreleased = release_date and release_date.date() > datetime.now().date()
 
         existing_entry = state.known_albums.get(album["id"])
-        is_expired = release_date is not None and release_date < cutoff
-        needs_playlist_add = (existing_entry is None or not existing_entry.added_to_playlist) and (not is_expired or (existing_entry is not None and existing_entry.manual_override is False))
+        not_yet_added = existing_entry is None or not existing_entry.added_to_playlist
+        aged_out = release_date is not None and release_date < cutoff
+        was_promoted = existing_entry is not None and is_promoted(existing_entry)
+        needs_playlist_add = not_yet_added and (not aged_out or was_promoted)
+
         prerelease_exclusion = _matching_prerelease_exclusion(state, artist, album)
         record_album(state, artist, album, now_iso)
         entry = state.known_albums[album["id"]]

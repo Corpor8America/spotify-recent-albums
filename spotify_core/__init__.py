@@ -53,7 +53,17 @@ from .errors import (
     SpotifyAPIError,
     SpotifyCoreError,
 )
-from .filters import is_auto_excluded, is_effectively_excluded, parse_release_date
+from .filters import (
+    MIN_RETENTION_DAYS,
+    is_aged_out,
+    is_auto_excluded,
+    is_effectively_excluded,
+    is_expired,
+    is_past_retention,
+    is_promoted,
+    parse_release_date,
+    retention_days,
+)
 from .logging import clear_logs, configure_logging, get_recent_logs, log
 from .models import Album, Artist, MusicBrainzAlbum, ScanProgress, State
 from .playlists import (
@@ -68,7 +78,12 @@ from .playlists import (
     remove_tracks_from_playlist,
     reorder_playlist,
 )
-from .reports import get_excluded_albums, get_report_albums, get_upcoming_albums
+from .reports import (
+    get_excluded_albums,
+    get_expired_albums,
+    get_report_albums,
+    get_upcoming_albums,
+)
 from .scan import _cancel_event, cancel_scan, record_album, reorder_lock, run_lock, run_scan, start_scan
 from .state import clear_expired_rate_limits, load_state, save_state, update_state
 

@@ -163,6 +163,7 @@ get_artist_status_and_release_groups = musicbrainz.get_artist_status_and_release
 get_albums_with_future_dates = musicbrainz.get_albums_with_future_dates
 get_albums_in_window = musicbrainz.get_albums_in_window
 MB_ACTIVE_REFRESH_DAYS = musicbrainz.MB_ACTIVE_REFRESH_DAYS
+MusicBrainzThrottled = musicbrainz.MusicBrainzThrottled
 
 
 def endpoint_category(method, url):

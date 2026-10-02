@@ -205,24 +205,51 @@ If the classifier ordered any real (non-skipped) hits it logs
 
 ## 7. Rate-limit / error handling
 
+Per https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting, MusicBrainz
+declines a request with **503** for three different reasons, checked in order:
+a throttle on our User-Agent, a throttle on our source IP, or the servers
+being globally overloaded. The response does not say which.
+
 - MB failures during the classification pass never abort the scan — caught
   and logged per artist, degrading to the normal Spotify path (same spirit
   as the `except Exception` around MB calls that used to live in
   `_process_artists`).
-- `get_artist_status_and_release_groups` itself returns `(True, [])` on
-  error, so even a hard MB outage just means "classify everything as
-  normal".
-- MB calls run at the module's existing `_rate_limit()` pace
-  (~1.2-1.8 req/sec, headroom above MusicBrainz's hard 1/sec ceiling to
-  avoid 503s when running on a shared Docker IP; see `_MIN_INTERVAL` /
-  `_JITTER_SECONDS` in `musicbrainz.py`). The early-stop budget
-  (section 3) bounds MB traffic on oversized batches.
+- `get_artist_status_and_release_groups` returns `(True, [])` on a normal
+  lookup error, so even a hard MB outage just means "classify everything as
+  normal". **But** `MusicBrainzThrottled` propagates instead, because
+  "MusicBrainz refused us" is not the same answer as "this artist is active";
+  caching the former as the latter suppressed re-checks for
+  `MB_ACTIVE_REFRESH_DAYS`. On a throttle the pre-pass ends for that run
+  having cached nothing, and every artist falls through to the Spotify path.
+- MB calls run at the module's `_rate_limit()` pace — a **1.2–1.8 second
+  interval** (≈0.56–0.83 req/sec), keeping headroom above MusicBrainz's 1 req/sec
+  average-IP limit to avoid 503s on a shared Docker IP. The penalty is a cliff,
+  not a token bucket: exceed the measured rate and *100%* of requests are
+  declined until it decays, so a client that keeps retrying keeps itself
+  pinned. `_rate_limit()` runs before **every** attempt including retries, so
+  the pacing clock advances per wire request rather than per logical call.
+- After `_CIRCUIT_THRESHOLD` consecutive 503s the module pauses requests for
+  `_CIRCUIT_COOLDOWN` seconds, because only the IP case is helped by retrying;
+  during a global outage or a UA-level flag, retrying just adds load. Any
+  successful response closes the breaker. See `MB_MIN_INTERVAL`,
+  `MB_JITTER_SECONDS`, `MB_CIRCUIT_THRESHOLD` and `MB_CIRCUIT_COOLDOWN` in
+  `musicbrainz.py` (all env-overridable). The early-stop budget (section 3)
+  bounds MB traffic on oversized batches.
+- `_USER_AGENT` follows the documented `name/<version> ( contact-url )` format
+  with the version read from the `VERSION` file, and points at the real
+  repository — MusicBrainz needs a working contact address, and an
+  uncontactable User-Agent is treated as anonymous and throttled harder.
+- The scheduler adds a random per-run delay (`SCHEDULE_JITTER_SECONDS`, default
+  900) on top of the cron expression. MusicBrainz asks applications not to all
+  wake at the same instant; deployments firing together at the top of the hour
+  is grounds for being blocked.
 - Each successful status/release-group call is logged per artist
   (`MB: {name} - active=..., N album release-group(s)`), the resulting
   classification is logged (`hit in window` / `is inactive` / `only
   upcoming releases`), and one summary line closes the pass
   (`MB: classified X/N artist(s) (Y newly resolved, Z skipped, W hit(s)).`)
-  so the batch outcome is visible in the dashboard / docker logs.
+  so the batch outcome is visible in the dashboard / docker logs. A pass ended
+  early by throttling says so on that line.
 - A `RateLimitError` from Spotify *during* the reordered loop behaves
   exactly as before: the run stops, `state.in_progress` (with the new
   ordering + `processed_ids` so far) is left in place, and resume picks up

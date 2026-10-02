@@ -28,7 +28,12 @@ from .filters import (
 )
 from .logging import clear_logs, log, log_exception
 from .models import Album, Artist, MusicBrainzAlbum, ScanProgress
-from .musicbrainz import MB_ACTIVE_REFRESH_DAYS, get_artist_status_and_release_groups, resolve_spotify_to_mb
+from .musicbrainz import (
+    MB_ACTIVE_REFRESH_DAYS,
+    MusicBrainzThrottled,
+    get_artist_status_and_release_groups,
+    resolve_spotify_to_mb,
+)
 from .playlists import add_tracks_to_playlist, get_album_track_uris, playlist_order_is_stale, prune_playlist, reorder_playlist
 from .state import clear_expired_rate_limits, load_state, save_state, update_state
 
@@ -287,13 +292,24 @@ def _mb_classify_and_order(ctx, state, artists, days_lookback, total_count, inte
     now_utc_iso = datetime.now(timezone.utc).isoformat()
     classified = 0
     resolved = 0
+    throttled = False
 
     for artist in artists:
         artist_id = artist["id"]
         entry = state.artists.get(artist_id)
         mbid = entry.musicbrainz_id if entry else ""
         if not mbid:
-            mbid = resolve_spotify_to_mb(artist_id)
+            try:
+                mbid = resolve_spotify_to_mb(artist_id)
+            except MusicBrainzThrottled:
+                # Stop the whole pass: MusicBrainz's circuit breaker has
+                # already paused requests, and hammering it during an outage
+                # is what gets an application blocked. Nothing below is cached
+                # from this pass, so the next run redoes it cleanly.
+                log(f"MB: throttled while resolving {artist['name']} -- "
+                    "ending MusicBrainz pass for this run")
+                throttled = True
+                break
             if not mbid:
                 continue
             if entry is None:
@@ -310,6 +326,11 @@ def _mb_classify_and_order(ctx, state, artists, days_lookback, total_count, inte
 
         try:
             active, release_groups = get_artist_status_and_release_groups(ctx, mbid)
+        except MusicBrainzThrottled:
+            log(f"MB: throttled while checking {artist['name']} -- "
+                "ending MusicBrainz pass for this run")
+            throttled = True
+            break
         except Exception as e:
             log(f"MB: lookup failed for {artist['name']}: {e}")
             continue
@@ -359,7 +380,8 @@ def _mb_classify_and_order(ctx, state, artists, days_lookback, total_count, inte
             skip.add(artist_id)
 
     log(f"MB: classified {classified}/{len(artists)} artist(s) "
-        f"({resolved} newly resolved, {len(skip)} skipped, {len(hits_seen)} hit(s)).")
+        f"({resolved} newly resolved, {len(skip)} skipped, {len(hits_seen)} hit(s))"
+        f"{'; pass ended early - MusicBrainz throttled us' if throttled else ''}.")
     hits.sort(key=lambda h: h[0])
     ordered_ids = [aid for _, aid in hits]
     ordered_ids += [a["id"] for a in artists if a["id"] not in hits_seen]

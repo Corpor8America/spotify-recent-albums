@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 
 import spotify_core as core
 from spotify_core.api import ARTIST_ALBUMS_CATEGORY
+from spotify_core.musicbrainz import MusicBrainzThrottled
 from spotify_core.models import Album, Artist, MusicBrainzAlbum, ScanProgress, State
 from spotify_core.scan import (
     get_due_artists, record_album, _plan_artists, _mb_classify_and_order,
@@ -455,6 +456,37 @@ class MbClassifyAndOrderTests(unittest.TestCase):
         mock_resolve.assert_not_called()
         self.assertEqual(skip, {"a1"})
         self.assertFalse(state.artists["a1"].mb_active)
+
+    def test_throttled_lookup_is_not_cached_as_active(self):
+        """A 503 means MusicBrainz refused us, not that the artist is active.
+
+        Caching it as verified-active would suppress re-checks for the whole
+        MB_ACTIVE_REFRESH_DAYS window.
+        """
+        state = State(artists={
+            "a1": Artist(id="a1", name="A", musicbrainz_id="mb-123"),
+        })
+        artists = [self._artist("a1", "A"), self._artist("a2", "B")]
+        with patch("spotify_core.scan.get_artist_status_and_release_groups",
+                   side_effect=MusicBrainzThrottled("503")) as mock_status, \
+             patch("spotify_core.scan.resolve_spotify_to_mb"):
+            ordered, skip = _mb_classify_and_order(MagicMock(), state, artists, 365, 10, 7)
+        self.assertEqual(mock_status.call_count, 1, "pass should end on the first throttle")
+        self.assertEqual(skip, set())
+        entry = state.artists["a1"]
+        self.assertEqual(entry.mb_active_checked, "",
+                         "a throttled lookup must not record a check time")
+        self.assertEqual(ordered, ["a1", "a2"], "artists still go to Spotify")
+
+    def test_throttled_resolve_is_not_cached_as_a_mbid(self):
+        state = State()
+        artists = [self._artist("a1", "A")]
+        with patch("spotify_core.scan.resolve_spotify_to_mb",
+                   side_effect=MusicBrainzThrottled("503")):
+            ordered, skip = _mb_classify_and_order(MagicMock(), state, artists, 365, 10, 7)
+        self.assertNotIn("a1", state.artists)
+        self.assertEqual(skip, set())
+        self.assertEqual(ordered, ["a1"])
 
     def test_stale_inactive_recheck_flips_to_active(self):
         stale = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()

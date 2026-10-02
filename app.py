@@ -374,9 +374,20 @@ def create_app():
                     mbid = core.resolve_spotify_to_mb(artist_id)
                     if mbid:
                         ctx = core.get_context()
-                        mb_active = core.get_artist_active(mbid)
-                        mb_release_groups = core.get_artist_release_groups(ctx, mbid)
-                        mb_upcoming = core.get_albums_with_future_dates(ctx, mbid)
+                        # One paginated call gets both status and release-groups;
+                        # separate get_artist_active + get_artist_release_groups +
+                        # get_albums_with_future_dates meant three round trips,
+                        # two of them to the same endpoint re-fetching the same
+                        # pages -- all of it against the 1/sec IP budget.
+                        mb_active, mb_release_groups = (
+                            core.get_artist_status_and_release_groups(ctx, mbid)
+                        )
+                        today = datetime.now().strftime("%Y-%m-%d")
+                        mb_upcoming = [
+                            rg for rg in mb_release_groups
+                            if rg.get("first-release-date", "") > today
+                        ]
+                        upcoming_ids = {u.get("id") for u in mb_upcoming}
                         mb_albums = []
                         for rg in mb_release_groups:
                             mb_albums.append({
@@ -384,7 +395,7 @@ def create_app():
                                 "name": rg.get("title"),
                                 "primary_type": rg.get("primary-type"),
                                 "release_date": rg.get("first-release-date", ""),
-                                "is_upcoming": rg.get("id", "") in {u.get("id") for u in mb_upcoming},
+                                "is_upcoming": rg.get("id", "") in upcoming_ids,
                                 "url": f"https://musicbrainz.org/release-group/{rg.get('id')}",
                             })
                         mb_info = {
@@ -444,6 +455,14 @@ def create_app():
 
 # --- Scheduler ---------------------------------------------------------------
 
+# MusicBrainz asks applications not to wake up at the same instant every day:
+# deployments that all fire at the top of the hour pile onto the same second and
+# overload the service, which is grounds for blocking. The cron expression is
+# still the user's, but each run is delayed by a random amount up to this many
+# seconds so instances spread out instead of marching in step.
+SCHEDULE_JITTER_SECONDS = int(os.environ.get("SCHEDULE_JITTER_SECONDS", "900"))
+
+
 def _start_scheduler():
     if os.environ.get("RUN_SCHEDULER", "1") != "1":
         return
@@ -458,6 +477,7 @@ def _start_scheduler():
         core.log(f"Invalid cron schedule {cron_expr!r}; using default 0 6 * * *")
         minute, hour, day, month, dow = "0", "6", "*", "*", "*"
 
+    jitter = max(0, SCHEDULE_JITTER_SECONDS)
     scheduler = BackgroundScheduler(timezone="UTC")
     scheduler.add_job(
         lambda: core.run_scan(
@@ -465,10 +485,19 @@ def _start_scheduler():
             interval_days=cfg()["interval_days"],
             min_request_interval=cfg()["min_request_interval"],
         ),
-        trigger=CronTrigger(minute=minute, hour=hour, day=day, month=month, day_of_week=dow),
+        trigger=CronTrigger(
+            minute=minute,
+            hour=hour,
+            day=day,
+            month=month,
+            day_of_week=dow,
+            jitter=jitter,
+        ),
+        replace_existing=True,
     )
     scheduler.start()
-    core.log(f"Scheduler started (cron: {cron_expr} UTC)")
+    core.log(f"Scheduler started (cron: {cron_expr} UTC"
+             f"{f', jitter up to {jitter}s' if jitter else ''})")
 
 
 if __name__ == "__main__":

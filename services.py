@@ -146,7 +146,7 @@ class PlaylistService:
                 # Leave the entry untouched: clearing added_to_playlist while
                 # the tracks are still on the playlist would make state lie.
                 core.log(f"ERROR returning '{entry.name}' to expired: {e}")
-                return 502, f"Could not update the playlist: {e}"
+                return 502, "Could not update the playlist due to an internal error"
         finally:
             core.run_lock.release()
         return self._clear_promotion(album_id)

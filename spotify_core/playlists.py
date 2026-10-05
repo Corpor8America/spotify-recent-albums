@@ -220,12 +220,13 @@ def prune_playlist(ctx, token, state, days, playlist_id):
 
 
 def replace_playlist_contents(ctx, token, playlist_id, track_uris, state):
-    """Clear the playlist with Spotify's replace endpoint, then rebuild it."""
+    """Clear the current playlist once, then rebuild it without re-reading."""
     url = f"{ctx.spotify_api_base}/playlists/{playlist_id}/items"
-    spotify_request(ctx, "PUT", token, url, state, json_data={"uris": []})
+    current_uris = get_playlist_track_uris(ctx, token, playlist_id, state)
+    if current_uris:
+        remove_tracks_from_playlist(ctx, token, playlist_id, current_uris, state)
     for i in range(0, len(track_uris), 100):
         spotify_request(ctx, "POST", token, url, state, json_data={"uris": track_uris[i:i + 100]})
-
 
 def reorder_playlist(ctx, token, state, playlist_id):
     """Reorders the playlist so tracks are sorted by album release date

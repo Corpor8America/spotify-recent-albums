@@ -23,7 +23,6 @@ ARTIST_ALBUMS_CATEGORY = "GET /artists/{id}/albums"
 ALBUM_TRACKS_CATEGORY = "GET /albums/{id}/tracks"
 PLAYLIST_ADD_CATEGORY = "POST /playlists/{id}/items"
 PLAYLIST_REMOVE_CATEGORY = "DELETE /playlists/{id}/items"
-PLAYLIST_REPLACE_CATEGORY = "PUT /playlists/{id}/items"
 
 
 def endpoint_category(method, url, api_base=""):

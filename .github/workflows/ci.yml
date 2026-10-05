@@ -11,6 +11,8 @@ on:
 permissions:
   contents: read
 
+# Keep PR updates triggering a fresh CI run.
+
 jobs:
   test:
     name: Test

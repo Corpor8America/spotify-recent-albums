@@ -283,10 +283,16 @@ def playlist_order_is_stale(ctx, token, state, playlist_id):
     expected_uris = []
     expected_seen = set()
     for album in sorted(albums, key=sort_key):
-        for uri in album.track_uris or []:
-            if uri in seen_uris and uri not in expected_seen:
-                expected_uris.append(uri)
-                expected_seen.add(uri)
+        album_uris = album.track_uris or []
+        # Only albums represented in the current playlist participate in the
+        # canonical comparison. Once an album is present, all of its known
+        # tracks must be present too; this detects partial/missing albums while
+        # still ignoring albums that have not been added to Spotify yet.
+        if any(uri in seen_uris for uri in album_uris):
+            for uri in album_uris:
+                if uri not in expected_seen:
+                    expected_uris.append(uri)
+                    expected_seen.add(uri)
 
     return observed_uris != expected_uris
 

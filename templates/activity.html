@@ -6,6 +6,9 @@
     <div class="button-row">
       <label class="toggle-control"><input type="checkbox" id="auto-refresh"> Auto refresh</label>
       <button class="btn small secondary" type="button" id="refresh-now"><span class="material-symbols-outlined" style="font-size: 14px;">refresh</span> Refresh now</button>
+      <a class="btn small secondary" href="{{ url_for('activity_download') }}" download>
+        <span class="material-symbols-outlined" style="font-size: 14px;">download</span> Download detailed logs
+      </a>
     </div>
     <p class="muted" id="refresh-status" style="margin-bottom: 1rem;">Auto refresh is off.</p>
     <div class="log-feed" id="log-feed">

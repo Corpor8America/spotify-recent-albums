@@ -11,7 +11,7 @@ A self-hosted web application that keeps a Spotify playlist up to date with rece
 - **Upcoming releases:** uses MusicBrainz release information to identify prerelease albums and lets you manually exclude an upcoming release.
 - **Expired albums:** moves albums beyond the configured lookback age out of the main playlist into an Expired section. You can promote an expired album back to the playlist or return it to Expired. Expired entries are retained for twice the configured lookback period.
 - **Artist status:** view followed artists, scan progress, last-checked information, and MusicBrainz activity.
-- **Operational visibility:** dashboard scan status and logs, plus health and readiness endpoints.
+- **Operational visibility:** dashboard scan status, a dedicated Activity page for logs, plus health and readiness endpoints.
 - **Persistent configuration and state:** settings, authorization, and scan data are stored in the mounted data directory.
 
 ## Requirements
@@ -93,7 +93,7 @@ Scheduled scans include a randomized delay of up to 15 minutes by default. You c
 
 After configuration and Spotify authorization:
 
-- The dashboard shows recent albums, excluded albums, expired albums, scan status, and recent logs.
+- The dashboard shows recent albums, excluded albums, expired albums, and scan status. The Activity page shows recent logs and can optionally auto-refresh.
 - Use an album's include/exclude controls to manage whether it belongs in the synchronized playlist.
 - Use the Expired section to promote an album back to the main playlist or return a promoted album to Expired.
 - Visit **Artists** to review followed artists and their scan status.

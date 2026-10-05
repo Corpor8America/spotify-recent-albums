@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="card-header"><span class="material-symbols-outlined">history</span> Recent activity</div>
+  <div class="card-body">
+    <div class="button-row">
+      <label class="toggle-control"><input type="checkbox" id="auto-refresh"> Auto refresh</label>
+      <button class="btn small secondary" type="button" id="refresh-now"><span class="material-symbols-outlined" style="font-size: 14px;">refresh</span> Refresh now</button>
+    </div>
+    <p class="muted" id="refresh-status" style="margin-bottom: 1rem;">Auto refresh is off.</p>
+    <div class="log-feed" id="log-feed">
+      {% for line in logs %}
+      <div class="log-entry" data-raw="{{ line|e }}"><div class="log-entry-content"><span class="log-message">{{ line }}</span></div></div>
+      {% else %}
+      <div class="log-empty">No activity yet -- run a scan to see logs here.</div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+<p class="footer-text">version {{ version }}</p>
+{% endblock %}
+{% block scripts %}
+<script>
+(function() {
+  var feed = document.getElementById('log-feed');
+  var toggle = document.getElementById('auto-refresh');
+  var refreshNow = document.getElementById('refresh-now');
+  var status = document.getElementById('refresh-status');
+  var timer = null;
+  var refreshInterval = 20000;
+
+  if (feed) {
+    feed.querySelectorAll('.log-entry').forEach(function(entry) {
+      var raw = entry.getAttribute('data-raw') || '';
+      var match = raw.match(/^(\d{2}:\d{2}:\d{2})\s+(.*)/);
+      var timestamp = match ? match[1] : '';
+      var message = match ? match[2] : raw;
+      var type = 'info';
+      var lower = message.toLowerCase();
+      if (/error|fail|exception|rate.limit|denied|\b5\d\d\b/.test(lower)) type = 'error';
+      else if (/warn|warning/.test(lower)) type = 'warn';
+      else if (/success|added|connected|completed|saved|done|created/.test(lower)) type = 'success';
+      var iconMap = {info:'info', success:'check_circle', warn:'warning', error:'error'};
+      entry.classList.add('log-' + type);
+      entry.innerHTML = '<span class="log-timestamp">' + timestamp + '</span>' +
+        '<span class="log-icon material-symbols-outlined">' + iconMap[type] + '</span>' +
+        '<span class="log-message">' + message + '</span>';
+    });
+  }
+
+  function setAutoRefresh(enabled) {
+    if (timer) window.clearInterval(timer);
+    timer = null;
+    if (enabled) {
+      status.textContent = 'Auto refresh is on. Refreshing every 20 seconds.';
+      timer = window.setInterval(function() { window.location.reload(); }, refreshInterval);
+    } else {
+      status.textContent = 'Auto refresh is off.';
+    }
+  }
+
+  toggle.addEventListener('change', function() { setAutoRefresh(toggle.checked); });
+  refreshNow.addEventListener('click', function() { window.location.reload(); });
+})();
+</script>
+{% endblock %}

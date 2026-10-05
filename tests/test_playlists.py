@@ -236,21 +236,21 @@ class ReorderPlaylistTests(ContextTestCase):
 
 
 class ReplacePlaylistContentsTests(ContextTestCase):
-    def test_replaces_playlist_from_ordered_uris(self):
+    def test_clears_current_playlist_then_rebuilds_without_reread(self):
         state = State()
         calls = []
-        with patch.object(core.playlists, "spotify_request",
+        with patch.object(core.playlists, "get_playlist_track_uris",
+                          return_value=["old", "duplicate", "duplicate"]),              patch.object(core.playlists, "remove_tracks_from_playlist") as remove,              patch.object(core.playlists, "spotify_request",
                           side_effect=lambda ctx, method, token, url, state, **kwargs:
                               calls.append((method, kwargs.get("json_data")))):
             core.playlists.replace_playlist_contents(
-                self.ctx, "token", "playlist", ["a", "b", "a"], state)
+                self.ctx, "token", "playlist", ["a", "b"], state)
 
+        remove.assert_called_once_with(
+            self.ctx, "token", "playlist", ["old", "duplicate", "duplicate"], state)
         self.assertEqual(calls, [
-            ("PUT", {"uris": []}),
-            ("POST", {"uris": ["a", "b", "a"]}),
+            ("POST", {"uris": ["a", "b"]}),
         ])
-
-
 class ReorderPlaylistDuplicateTrackTests(ContextTestCase):
     def test_reorder_deduplicates_tracks_shared_by_multiple_albums(self):
         state = State(known_albums={

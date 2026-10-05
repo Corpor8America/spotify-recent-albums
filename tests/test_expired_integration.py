@@ -178,6 +178,78 @@ class ExpiredWorkflowTests(ContextTestCase):
 
         self.assertEqual(response.status_code, 400)
 
+
+    def test_promote_async_returns_immediately_and_reports_progress(self):
+        self.connect()
+        self.go_offline()
+        core.save_state(State(known_albums={
+            "e": _album("e", "Aged Release", EXPIRED),
+        }))
+
+        import threading
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_apply(album_id, value):
+            started.set()
+            release.wait(timeout=2)
+            return True
+
+        self._patch(playlists_mod, "apply_album_override", slow_apply)
+        self._patch(core, "apply_album_override", slow_apply)
+
+        response = self.client.post(
+            "/albums/e/promote",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json["status"], "queued")
+        self.assertTrue(started.wait(timeout=2))
+
+        status = self.client.get("/albums/e/promote/status")
+        self.assertEqual(status.status_code, 200)
+        self.assertIn(status.json["status"], {"running", "completed"})
+
+        release.set()
+
+    def test_multiple_promotes_can_be_queued(self):
+        self.connect()
+        self.go_offline()
+        core.save_state(State(known_albums={
+            "e1": _album("e1", "Aged One", EXPIRED),
+            "e2": _album("e2", "Aged Two", EXPIRED),
+        }))
+
+        import threading
+        import time
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+
+        def slow_apply(album_id, value):
+            calls.append(album_id)
+            if album_id == "e1":
+                started.set()
+                release.wait(timeout=2)
+            return True
+
+        self._patch(playlists_mod, "apply_album_override", slow_apply)
+        self._patch(core, "apply_album_override", slow_apply)
+
+        first = self.client.post("/albums/e1/promote", headers={"X-Requested-With": "XMLHttpRequest"})
+        second = self.client.post("/albums/e2/promote", headers={"X-Requested-With": "XMLHttpRequest"})
+        self.assertEqual(first.status_code, 202)
+        self.assertEqual(second.status_code, 202)
+        self.assertTrue(started.wait(timeout=2))
+        self.assertEqual(self.client.get("/albums/e2/promote/status").json["status"], "queued")
+
+        release.set()
+        for _ in range(20):
+            if len(calls) == 2:
+                break
+            time.sleep(0.05)
+        self.assertEqual(calls, ["e1", "e2"])
+
     # --- Return to expired ------------------------------------------------------
 
     def test_return_removes_tracks_and_clears_the_promotion(self):

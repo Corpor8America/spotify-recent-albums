@@ -184,6 +184,7 @@ def create_app():
 
             scan_running=core.run_lock.locked(),
             reorder_running=core.reorder_lock.locked(),
+            promote_statuses=playlists.promote_statuses(),
             now=datetime.now(timezone.utc),
             version=core.get_version(),
         )
@@ -265,10 +266,19 @@ def create_app():
 
     @app.route("/albums/<album_id>/promote", methods=["POST"])
     def promote_expired_album(album_id):
-        status, error = playlists.promote_expired(album_id)
-        if status is not None:
-            return error, status
+        status, result = playlists.promote_expired_async(album_id)
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            return jsonify(result), status
+        if status != 202:
+            return result.get("message", "Could not queue promotion"), status
         return redirect(url_for("dashboard"))
+
+    @app.route("/albums/<album_id>/promote/status")
+    def promote_expired_album_status(album_id):
+        status = playlists.promote_status(album_id)
+        if status is None:
+            return jsonify({"status": "unknown"}), 404
+        return jsonify(status)
 
     @app.route("/albums/<album_id>/expire", methods=["POST"])
     def return_album_to_expired(album_id):

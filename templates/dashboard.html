@@ -236,6 +236,7 @@
       icon.textContent = 'remove';
       label.textContent = 'Remove from playlist';
       form.action = "{{ url_for('return_album_to_expired', album_id='__ALBUM_ID__') }}".replace('__ALBUM_ID__', form.dataset.albumId);
+      form.dataset.promoteDone = 'true';
       form.classList.remove('promote-form');
     } else if (state === 'failed') {
       button.disabled = false;
@@ -264,6 +265,7 @@
     if (button.disabled) poll(form);
 
     form.addEventListener('submit', async (event) => {
+      if (form.dataset.promoteDone === 'true') return;
       event.preventDefault();
       if (button.disabled) return;
       setButton(form, 'queued');

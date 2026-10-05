@@ -5,6 +5,7 @@ APScheduler background thread are only created by ``create_app()``
 (called from ``wsgi.py`` under gunicorn, or the ``__main__`` guard below).
 """
 
+import html
 import os
 import re
 import secrets
@@ -230,7 +231,7 @@ def create_app():
     def callback():
         error = request.args.get("error")
         if error:
-            return f"Spotify authorization failed: {error}", 400
+            return f"Spotify authorization failed: {html.escape(error)}", 400
 
         if request.args.get("state") != session.get("oauth_state"):
             return "State mismatch -- possible CSRF, please try /login again.", 400

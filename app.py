@@ -266,11 +266,16 @@ def create_app():
 
     @app.route("/albums/<album_id>/promote", methods=["POST"])
     def promote_expired_album(album_id):
-        status, result = playlists.promote_expired_async(album_id)
+        # The dashboard uses AJAX so the page stays in place while the
+        # background worker performs the playlist mutation. Keep the plain
+        # form submission synchronous as a non-JavaScript fallback.
         if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            status, result = playlists.promote_expired_async(album_id)
             return jsonify(result), status
-        if status != 202:
-            return result.get("message", "Could not queue promotion"), status
+
+        status, error = playlists.promote_expired(album_id)
+        if status is not None:
+            return error, status
         return redirect(url_for("dashboard"))
 
     @app.route("/albums/<album_id>/promote/status")

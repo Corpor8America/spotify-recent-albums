@@ -181,12 +181,20 @@ def create_app():
             },
             artists_tracked=len(state.artists),
             known_albums_count=len(state.known_albums),
-            logs=core.get_recent_logs()[-80:],
+
             scan_running=core.run_lock.locked(),
             reorder_running=core.reorder_lock.locked(),
             now=datetime.now(timezone.utc),
             version=core.get_version(),
         )
+
+    # --- Activity -----------------------------------------------------------------
+
+    @app.route("/activity")
+    def activity():
+        if not core.is_configured():
+            return redirect(url_for("settings"))
+        return render_template("activity.html", logs=core.get_recent_logs()[-80:], version=core.get_version())
 
     # --- OAuth -------------------------------------------------------------------
 

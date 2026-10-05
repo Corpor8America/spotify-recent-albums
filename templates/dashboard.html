@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% block head %}<meta http-equiv="refresh" content="20">{% endblock %}
 {% block content %}
 
 <div class="card">
@@ -204,67 +203,6 @@
   </div>
 </details>
 
-<details class="card collapsible" open>
-  <summary class="card-header">
-    <span class="material-symbols-outlined">history</span> Recent activity
-    <span class="collapse-icon material-symbols-outlined">expand_more</span>
-  </summary>
-  <div class="card-body">
-    <div class="log-feed" id="log-feed">
-      {% for line in logs %}
-      <div class="log-entry" data-raw="{{ line|e }}">
-        <div class="log-entry-content">
-          <span class="log-message">{{ line }}</span>
-        </div>
-      </div>
-      {% else %}
-      <div class="log-empty">No activity yet -- run a scan to see logs here.</div>
-      {% endfor %}
-    </div>
-  </div>
-</details>
-
 <p class="footer-text">version {{ version }}</p>
 {% endblock %}
 
-{% block scripts %}
-<script>
-  (function() {
-    var feed = document.getElementById('log-feed');
-    if (!feed) return;
-
-    var entries = feed.querySelectorAll('.log-entry');
-    entries.forEach(function(entry) {
-      var raw = entry.getAttribute('data-raw') || '';
-      var match = raw.match(/^(\d{2}:\d{2}:\d{2})\s+(.*)/);
-      var timestamp = match ? match[1] : '';
-      var message = match ? match[2] : raw;
-
-      var type = 'info';
-      var lower = message.toLowerCase();
-      if (/rate limiter: waiting/.test(lower)) {
-        type = 'info';
-      } else if (/error|fail|exception|rate.limit|denied|\b5\d\d\b/.test(lower)) {
-        type = 'error';
-      } else if (/warn|warning/.test(lower)) {
-        type = 'warn';
-      } else if (/success|added|connected|completed|saved|done|created/.test(lower)) {
-        type = 'success';
-      }
-
-      var iconMap = {
-        info: 'info',
-        success: 'check_circle',
-        warn: 'warning',
-        error: 'error'
-      };
-
-      entry.classList.add('log-' + type);
-      entry.innerHTML =
-        '<span class="log-timestamp">' + timestamp + '</span>' +
-        '<span class="log-icon material-symbols-outlined">' + (iconMap[type] || 'info') + '</span>' +
-        '<span class="log-message">' + message + '</span>';
-    });
-  })();
-</script>
-{% endblock %}

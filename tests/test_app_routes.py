@@ -37,6 +37,22 @@ class AppRoutesTests(ContextTestCase):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Recent Albums", response.data)
+        self.assertNotIn(b'http-equiv="refresh"', response.data)
+
+    def test_activity_page_renders_logs_without_refresh(self):
+        core.log("activity test message")
+        response = self.client.get("/activity")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Recent activity", response.data)
+        self.assertIn(b"activity test message", response.data)
+        self.assertNotIn(b'http-equiv="refresh"', response.data)
+        self.assertIn(b"Auto refresh", response.data)
+
+    def test_activity_page_redirects_when_not_configured(self):
+        self.write_config({"spotify_client_id": "", "spotify_client_secret": ""})
+        response = self.client.get("/activity", follow_redirects=False)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/settings", response.location)
 
     def test_dashboard_shows_not_connected_when_no_token(self):
         response = self.client.get("/")

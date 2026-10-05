@@ -5,12 +5,13 @@ APScheduler background thread are only created by ``create_app()``
 (called from ``wsgi.py`` under gunicorn, or the ``__main__`` guard below).
 """
 
+import html
 import os
 import re
 import secrets
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import spotify_core as core
@@ -197,6 +198,24 @@ def create_app():
             return redirect(url_for("settings"))
         return render_template("activity.html", logs=core.get_recent_logs()[-80:], version=core.get_version())
 
+    @app.route("/activity/download")
+    def activity_download():
+        if not core.is_configured():
+            return redirect(url_for("settings"))
+        logs = core.get_recent_logs()
+        body = "\n".join(logs)
+        if body:
+            body += "\n"
+        return Response(
+            body,
+            mimetype="text/plain",
+            headers={
+                "Content-Disposition": 'attachment; filename="spotify-recent-albums-detailed.log"',
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     # --- OAuth -------------------------------------------------------------------
 
     @app.route("/login")
@@ -212,7 +231,7 @@ def create_app():
     def callback():
         error = request.args.get("error")
         if error:
-            return f"Spotify authorization failed: {error}", 400
+            return f"Spotify authorization failed: {html.escape(error)}", 400
 
         if request.args.get("state") != session.get("oauth_state"):
             return "State mismatch -- possible CSRF, please try /login again.", 400

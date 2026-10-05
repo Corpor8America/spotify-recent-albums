@@ -238,6 +238,27 @@ class ReorderPlaylistTests(ContextTestCase):
         )
 
 
+class ReorderPlaylistDuplicateTrackTests(ContextTestCase):
+    def test_reorder_deduplicates_tracks_shared_by_multiple_albums(self):
+        state = State(known_albums={
+            "older": make_album("older", "Older", "2026-01-01", added=True,
+                               track_uris=["shared", "older-only"]),
+            "newer": make_album("newer", "Newer", "2026-06-01", added=True,
+                               track_uris=["shared", "newer-only"]),
+        })
+
+        with patch.object(core.playlists, "get_playlist_track_uris",
+                          return_value=["shared", "older-only", "newer-only"]), \
+             patch.object(core.playlists, "remove_tracks_from_playlist"), \
+             patch.object(core.playlists, "add_tracks_to_playlist") as add:
+            core.reorder_playlist("token", state, "playlist")
+
+        add.assert_called_once_with(
+            self.ctx, "token", "playlist",
+            ["shared", "older-only", "newer-only"], state,
+        )
+
+
 class ReorderPlaylistMultiAlbumTests(ContextTestCase):
     def test_three_albums_sorted_oldest_first(self):
         state = State(known_albums={

@@ -368,6 +368,14 @@ class DockerIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 302)
 
+    def test_activity_log_download_returns_detailed_log_file(self):
+        r = self.session.get(f"{APP_URL}/activity/download", timeout=10)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("attachment", r.headers.get("Content-Disposition", ""))
+        self.assertIn("spotify-recent-albums-detailed.log", r.headers.get("Content-Disposition", ""))
+        self.assertEqual(r.headers.get("Content-Type"), "text/plain; charset=utf-8")
+
+
     # --- mock Spotify helpers ---------------------------------------------
 
     def _mock_configure(self, **kwargs):

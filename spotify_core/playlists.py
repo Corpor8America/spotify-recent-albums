@@ -238,8 +238,12 @@ def reorder_playlist(ctx, token, state, playlist_id):
     albums.sort(key=sort_key)
 
     ordered_uris = []
+    seen_uris = set()
     for album in albums:
-        ordered_uris.extend(album.track_uris or [])
+        for uri in album.track_uris or []:
+            if uri not in seen_uris:
+                ordered_uris.append(uri)
+                seen_uris.add(uri)
 
     if not ordered_uris:
         log("No playlisted tracks found to reorder.")
@@ -277,10 +281,12 @@ def playlist_order_is_stale(ctx, token, state, playlist_id):
     seen_uris = set(observed_uris)
 
     expected_uris = []
+    expected_seen = set()
     for album in sorted(albums, key=sort_key):
-        album_uris = album.track_uris or []
-        if any(uri in seen_uris for uri in album_uris):
-            expected_uris.extend(album_uris)
+        for uri in album.track_uris or []:
+            if uri in seen_uris and uri not in expected_seen:
+                expected_uris.append(uri)
+                expected_seen.add(uri)
 
     return observed_uris != expected_uris
 

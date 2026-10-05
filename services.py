@@ -6,6 +6,7 @@ calls go through the ``core.*`` wrappers so tests can patch either side
 """
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import spotify_core as core
 
@@ -36,6 +37,11 @@ class PlaylistService:
     otherwise an HTTP status and the message to show. Statuses live here so
     routes stay thin dispatchers.
     """
+
+    def __init__(self):
+        self._promote_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="album-promote")
+        self._promote_status = {}
+        self._promote_status_lock = threading.Lock()
 
     def apply_override(self, album_id, value):
         """Apply a manual include/exclude override. Returns False when the
@@ -97,6 +103,59 @@ class PlaylistService:
                 core.run_lock.release()
         finally:
             core.reorder_lock.release()
+
+    def promote_expired_async(self, album_id):
+        """Queue an expired-album promotion and return immediately."""
+        if not core.is_connected():
+            return 400, {"status": "failed", "message": "Not connected to Spotify"}
+        if self._expired_album(album_id) is None:
+            return 404, {"status": "failed", "message": "Unknown expired album"}
+
+        with self._promote_status_lock:
+            current = self._promote_status.get(album_id)
+            if current and current["status"] in {"queued", "running"}:
+                return 202, dict(current)
+            status = {"status": "queued"}
+            self._promote_status[album_id] = status
+
+        self._promote_executor.submit(self._run_promote, album_id)
+        return 202, dict(status)
+
+    def promote_status(self, album_id):
+        with self._promote_status_lock:
+            status = self._promote_status.get(album_id)
+            return dict(status) if status else None
+
+    def promote_statuses(self):
+        with self._promote_status_lock:
+            return {album_id: dict(status) for album_id, status in self._promote_status.items()}
+
+    def _set_promote_status(self, album_id, status, message=None):
+        value = {"status": status}
+        if message:
+            value["message"] = message
+        with self._promote_status_lock:
+            self._promote_status[album_id] = value
+
+    def _run_promote(self, album_id):
+        self._set_promote_status(album_id, "running")
+        try:
+            core.run_lock.acquire(blocking=True)
+            try:
+                status, error = self.promote_expired(album_id)
+            finally:
+                core.run_lock.release()
+            if status is not None:
+                self._set_promote_status(album_id, "failed", error)
+            else:
+                self._set_promote_status(album_id, "completed")
+                core.log(f"Promoted expired album {album_id}.")
+        except Exception as e:
+            core.log(f"ERROR promoting expired album {album_id}: {e}")
+            self._set_promote_status(
+                album_id, "failed",
+                "Could not update the playlist due to an internal error",
+            )
 
     def promote_expired(self, album_id):
         """Add an expired album back to the main playlist. It keeps its expired

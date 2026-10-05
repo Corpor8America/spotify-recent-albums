@@ -128,7 +128,11 @@ class PlaylistService:
 
     def promote_statuses(self):
         with self._promote_status_lock:
-            return {album_id: dict(status) for album_id, status in self._promote_status.items()}
+            return {
+                album_id: dict(status)
+                for album_id, status in self._promote_status.items()
+                if status["status"] in {"queued", "running"}
+            }
 
     def _set_promote_status(self, album_id, status, message=None):
         value = {"status": status}

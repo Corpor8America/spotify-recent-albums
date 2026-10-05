@@ -210,6 +210,8 @@ def create_app():
             mimetype="text/plain",
             headers={
                 "Content-Disposition": 'attachment; filename="spotify-recent-albums-detailed.log"',
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
             },
         )
 

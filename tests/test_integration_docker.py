@@ -374,6 +374,8 @@ class DockerIntegrationTests(unittest.TestCase):
         self.assertIn("attachment", r.headers.get("Content-Disposition", ""))
         self.assertIn("spotify-recent-albums-detailed.log", r.headers.get("Content-Disposition", ""))
         self.assertEqual(r.headers.get("Content-Type"), "text/plain; charset=utf-8")
+        self.assertEqual(r.headers.get("Cache-Control"), "no-store")
+        self.assertEqual(r.headers.get("X-Content-Type-Options"), "nosniff")
 
 
     # --- mock Spotify helpers ---------------------------------------------

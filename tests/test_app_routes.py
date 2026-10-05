@@ -37,6 +37,7 @@ class AppRoutesTests(ContextTestCase):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Recent Albums", response.data)
+        self.assertNotIn(b'http-equiv="refresh"', response.data)
 
     def test_activity_page_renders_logs_without_refresh(self):
         core.log("activity test message")

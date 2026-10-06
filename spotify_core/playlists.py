@@ -39,7 +39,7 @@ def get_playlist_track_uris(ctx, token, playlist_id, state):
     """Return every track URI currently in a playlist, including duplicates."""
     uris = []
     url = f"{ctx.spotify_api_base}/playlists/{playlist_id}/items"
-    limit, offset = 100, 0
+    limit, offset = 50, 0
     while True:
         data = spotify_get(ctx, token, url, state, {"limit": limit, "offset": offset})
         items = data.get("items", [])
@@ -219,6 +219,15 @@ def prune_playlist(ctx, token, state, days, playlist_id):
     _expire_albums(ctx, token, state, days, playlist_id)
 
 
+def replace_playlist_contents(ctx, token, playlist_id, track_uris, state):
+    """Clear the current playlist once, then rebuild it without re-reading."""
+    url = f"{ctx.spotify_api_base}/playlists/{playlist_id}/items"
+    current_uris = get_playlist_track_uris(ctx, token, playlist_id, state)
+    if current_uris:
+        remove_tracks_from_playlist(ctx, token, playlist_id, current_uris, state)
+    for i in range(0, len(track_uris), 100):
+        spotify_request(ctx, "POST", token, url, state, json_data={"uris": track_uris[i:i + 100]})
+
 def reorder_playlist(ctx, token, state, playlist_id):
     """Reorders the playlist so tracks are sorted by album release date
     (oldest first). Deletes all current tracks and re-adds them in the
@@ -249,16 +258,8 @@ def reorder_playlist(ctx, token, state, playlist_id):
         log("No playlisted tracks found to reorder.")
         return
 
-    # Rebuild from persisted album state, but fetch the existing playlist so
-    # the delete phase truly clears every item before the replacement is added.
-    current_uris = get_playlist_track_uris(ctx, token, playlist_id, state)
-
-    # Dev Mode apps can't PUT (replace) a playlist. Delete all current
-    # tracks then POST them back in the desired order.
     log(f"Reordering {len(ordered_uris)} track(s) from {len(albums)} album(s)...")
-    if current_uris:
-        remove_tracks_from_playlist(ctx, token, playlist_id, current_uris, state)
-    add_tracks_to_playlist(ctx, token, playlist_id, ordered_uris, state)
+    replace_playlist_contents(ctx, token, playlist_id, ordered_uris, state)
     log("Playlist reorder complete.")
 
 

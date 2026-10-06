@@ -226,18 +226,31 @@ class ReorderPlaylistTests(ContextTestCase):
         # These stale items must be cleared; only state-backed tracks return.
         current = ["new-1", "old-1", "external", "new-2", "old-2", "new-1"]
 
-        with patch.object(core.playlists, "get_playlist_track_uris", return_value=current), \
-             patch.object(core.playlists, "remove_tracks_from_playlist") as remove, \
-             patch.object(core.playlists, "add_tracks_to_playlist") as add:
+        with patch.object(core.playlists, "replace_playlist_contents") as replace:
             core.reorder_playlist("token", state, "playlist")
 
-        remove.assert_called_once_with(self.ctx, "token", "playlist", current, state)
-        add.assert_called_once_with(
+        replace.assert_called_once_with(
             self.ctx, "token", "playlist",
             ["old-1", "old-2", "new-1", "new-2"], state,
         )
 
 
+class ReplacePlaylistContentsTests(ContextTestCase):
+    def test_clears_current_playlist_then_rebuilds_without_reread(self):
+        state = State()
+        calls = []
+        with patch.object(core.playlists, "get_playlist_track_uris",
+                          return_value=["old", "duplicate", "duplicate"]),              patch.object(core.playlists, "remove_tracks_from_playlist") as remove,              patch.object(core.playlists, "spotify_request",
+                          side_effect=lambda ctx, method, token, url, state, **kwargs:
+                              calls.append((method, kwargs.get("json_data")))):
+            core.playlists.replace_playlist_contents(
+                self.ctx, "token", "playlist", ["a", "b"], state)
+
+        remove.assert_called_once_with(
+            self.ctx, "token", "playlist", ["old", "duplicate", "duplicate"], state)
+        self.assertEqual(calls, [
+            ("POST", {"uris": ["a", "b"]}),
+        ])
 class ReorderPlaylistDuplicateTrackTests(ContextTestCase):
     def test_reorder_deduplicates_tracks_shared_by_multiple_albums(self):
         state = State(known_albums={
@@ -247,13 +260,10 @@ class ReorderPlaylistDuplicateTrackTests(ContextTestCase):
                                track_uris=["shared", "newer-only"]),
         })
 
-        with patch.object(core.playlists, "get_playlist_track_uris",
-                          return_value=["shared", "older-only", "newer-only"]), \
-             patch.object(core.playlists, "remove_tracks_from_playlist"), \
-             patch.object(core.playlists, "add_tracks_to_playlist") as add:
+        with patch.object(core.playlists, "replace_playlist_contents") as replace:
             core.reorder_playlist("token", state, "playlist")
 
-        add.assert_called_once_with(
+        replace.assert_called_once_with(
             self.ctx, "token", "playlist",
             ["shared", "older-only", "newer-only"], state,
         )
@@ -270,13 +280,10 @@ class ReorderPlaylistMultiAlbumTests(ContextTestCase):
                               track_uris=["old-1", "old-2"]),
         })
 
-        with patch.object(core.playlists, "get_playlist_track_uris",
-                          return_value=["new-1", "mid-1", "old-1"]), \
-             patch.object(core.playlists, "remove_tracks_from_playlist"), \
-             patch.object(core.playlists, "add_tracks_to_playlist") as add:
+        with patch.object(core.playlists, "replace_playlist_contents") as replace:
             core.reorder_playlist("token", state, "playlist")
 
-        add.assert_called_once_with(
+        replace.assert_called_once_with(
             self.ctx, "token", "playlist",
             ["old-1", "old-2", "mid-1", "mid-2", "new-1", "new-2"], state,
         )
@@ -289,14 +296,13 @@ class ReorderPlaylistMultiAlbumTests(ContextTestCase):
                             track_uris=["b1", "b2"]),
         })
 
-        with patch.object(core.playlists, "get_playlist_track_uris",
-                          return_value=["a1", "b1"]), \
-             patch.object(core.playlists, "remove_tracks_from_playlist"), \
-             patch.object(core.playlists, "add_tracks_to_playlist") as add:
+        with patch.object(core.playlists, "replace_playlist_contents") as replace:
             core.reorder_playlist("token", state, "playlist")
 
-        added_uris = add.call_args.args[3]
-        self.assertEqual(len(added_uris), 5)
+        replace.assert_called_once_with(
+            self.ctx, "token", "playlist",
+            ["a1", "a2", "a3", "b1", "b2"], state,
+        )
 
 
 class ApplyAlbumOverrideTests(ContextTestCase):

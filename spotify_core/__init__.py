@@ -76,6 +76,7 @@ from .playlists import (
     playlist_order_is_stale,
     prune_playlist,
     remove_tracks_from_playlist,
+    remove_unfollowed_artists,
     reorder_playlist,
 )
 from .reports import (

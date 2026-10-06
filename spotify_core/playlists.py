@@ -113,6 +113,73 @@ def remove_tracks_from_playlist(ctx, token, playlist_id, track_uris, state):
         spotify_request(ctx, "DELETE", token, url, state, json_data={"items": items})
 
 
+def remove_unfollowed_artists(ctx, token, state, followed_artist_ids, playlist_id):
+    """Remove state and playlist tracks for artists no longer followed.
+
+    Playlist tracks are removed before the artist/album state is deleted.
+    Tracks shared with a still-followed artist are preserved.
+    """
+    followed_artist_ids = set(followed_artist_ids)
+    stale_artist_ids = set(state.artists) - followed_artist_ids
+    stale_artist_ids.update(
+        album.artist_id for album in state.known_albums.values()
+        if album.artist_id and album.artist_id not in followed_artist_ids
+    )
+    stale_artist_ids.update(
+        album.artist_id for album in state.musicbrainz_upcoming.values()
+        if album.artist_id and album.artist_id not in followed_artist_ids
+    )
+    if not stale_artist_ids:
+        return 0
+
+    stale_album_ids = [
+        album_id for album_id, album in state.known_albums.items()
+        if album.artist_id in stale_artist_ids
+    ]
+
+    if playlist_id:
+        keep_uris = {
+            uri
+            for album in state.known_albums.values()
+            if album.artist_id not in stale_artist_ids
+            for uri in (album.track_uris or [])
+        }
+        removal_uris = set()
+        for album_id in stale_album_ids:
+            album = state.known_albums[album_id]
+            if not album.added_to_playlist:
+                continue
+            track_uris = album.track_uris
+            if not track_uris:
+                track_uris = get_album_track_uris(ctx, token, album_id, state)
+            removal_uris.update(uri for uri in track_uris if uri not in keep_uris)
+
+        if removal_uris:
+            remove_tracks_from_playlist(ctx, token, playlist_id, sorted(removal_uris), state)
+
+    for album_id in stale_album_ids:
+        del state.known_albums[album_id]
+    for artist_id in stale_artist_ids:
+        state.artists.pop(artist_id, None)
+    state.musicbrainz_upcoming = {
+        rg_id: album
+        for rg_id, album in state.musicbrainz_upcoming.items()
+        if album.artist_id not in stale_artist_ids
+    }
+    if state.in_progress:
+        state.in_progress.due_ids = [
+            artist_id for artist_id in state.in_progress.due_ids
+            if artist_id not in stale_artist_ids
+        ]
+        state.in_progress.processed_ids = [
+            artist_id for artist_id in state.in_progress.processed_ids
+            if artist_id not in stale_artist_ids
+        ]
+    state_mod.save_state(ctx, state)
+    log(f"Removed {len(stale_album_ids)} album(s) for {len(stale_artist_ids)} unfollowed artist(s).")
+    return len(stale_album_ids)
+
+
 def _shared_track_guard(state, album_id):
     """URIs of every other album still in the playlist. Used so a removal
     never strips a track another album still needs."""

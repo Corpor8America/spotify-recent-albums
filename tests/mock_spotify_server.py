@@ -102,6 +102,11 @@ class _State:
         self.artist_release_dates = {}  # artist_id -> release date string
         self.paren_album_artists = []   # artist_ids whose album names get " (Deluxe)"
 
+        # Subset of artists /me/following reports as followed. None means
+        # "follow everything", which is the default for most tests. Setting
+        # it lets a test unfollow artists to exercise state/playlist cleanup.
+        self.followed_artist_ids = None
+
     def reset_quota(self):
         with self.lock:
             self.request_count_since_reset = 0
@@ -255,7 +260,7 @@ class _Handler(BaseHTTPRequestHandler):
                 for key in ("daily_quota", "rate_limit_per_minute", "short_429_every",
                             "per_category_quota", "recent_release_date",
                             "albums_per_artist", "artist_release_dates",
-                            "paren_album_artists"):
+                            "paren_album_artists", "followed_artist_ids"):
                     if key in cfg:
                         setattr(self.state, key, cfg[key])
             self._send_json(200, {"ok": True})
@@ -369,21 +374,25 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _handle_following(self, qs):
         s = self.state
+        catalog = s.artists
+        if s.followed_artist_ids is not None:
+            followed = set(s.followed_artist_ids)
+            catalog = [a for a in s.artists if a["id"] in followed]
         limit = int(qs.get("limit", 50))
         after = qs.get("after")
         start = 0
         if after is not None:
-            for idx, a in enumerate(s.artists):
+            for idx, a in enumerate(catalog):
                 if a["id"] == after:
                     start = idx + 1
                     break
-        page = s.artists[start:start + limit]
-        next_after = page[-1]["id"] if page and (start + limit) < len(s.artists) else None
+        page = catalog[start:start + limit]
+        next_after = page[-1]["id"] if page and (start + limit) < len(catalog) else None
         self._send_json(200, {
             "artists": {
                 "items": page,
                 "cursors": {"after": next_after},
-                "total": len(s.artists),
+                "total": len(catalog),
             }
         })
 

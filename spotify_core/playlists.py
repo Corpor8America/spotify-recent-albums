@@ -225,6 +225,14 @@ def replace_playlist_contents(ctx, token, playlist_id, track_uris, state):
     current_uris = get_playlist_track_uris(ctx, token, playlist_id, state)
     if current_uris:
         remove_tracks_from_playlist(ctx, token, playlist_id, current_uris, state)
+    # Deduplicate while preserving order to avoid introducing duplicates.
+    deduped = []
+    seen = set()
+    for uri in track_uris:
+        if uri not in seen:
+            deduped.append(uri)
+            seen.add(uri)
+    track_uris = deduped
     for i in range(0, len(track_uris), 100):
         spotify_request(ctx, "POST", token, url, state, json_data={"uris": track_uris[i:i + 100]})
 

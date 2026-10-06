@@ -125,10 +125,9 @@ def remove_unfollowed_artists(ctx, token, state, followed_artist_ids, playlist_i
         album.artist_id for album in state.known_albums.values()
         if album.artist_id and album.artist_id not in followed_artist_ids
     )
-    stale_artist_ids.update(
-        album.artist_id for album in state.musicbrainz_upcoming.values()
-        if album.artist_id and album.artist_id not in followed_artist_ids
-    )
+    # MusicBrainz prerelease entries are intentionally retained until their
+    # normal MusicBrainz/Spotify handoff logic consumes them. Unfollowing an
+    # artist removes Spotify album state, but does not discard MB entries.
     if not stale_artist_ids:
         return 0
 

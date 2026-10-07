@@ -118,6 +118,21 @@ header h1 span {
   align-items: center;
 }
 
+header h1 .home-link {
+  color: var(--md-sys-color-on-background);
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  transition: color var(--md-transition-duration) var(--md-transition-timing);
+}
+
+header h1 .home-link:hover {
+  color: var(--md-sys-color-primary);
+  text-decoration: none;
+  filter: none;
+}
+
 .header-actions {
   display: flex;
   align-items: center;

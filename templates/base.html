@@ -12,7 +12,11 @@
 <body>
   <div class="main-container">
     <header>
-      <h1><span>🎧 Recent Albums</span></h1>
+      <h1>
+        <a href="{{ url_for('dashboard') }}" class="home-link" title="Home">
+          <span>🎧 Recent Albums</span>
+        </a>
+      </h1>
       <div class="header-actions">
         <a href="{{ url_for('activity') }}" class="icon-btn" title="Activity">
           <span class="material-symbols-outlined">history</span>

@@ -1,13 +1,20 @@
 """Playlist operations: track sync, pruning, reordering, creation,
 and the manual include/exclude override flow."""
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from . import auth as auth_mod
 from . import config as config_mod
 from . import state as state_mod
 from .api import spotify_get, spotify_request
-from .filters import is_effectively_excluded, parse_release_date
+from .errors import RateLimitError
+from .filters import (
+    is_aged_out,
+    is_effectively_excluded,
+    is_past_retention,
+    is_promoted,
+    parse_release_date,
+)
 from .logging import log
 from .models import State
 
@@ -32,7 +39,7 @@ def get_playlist_track_uris(ctx, token, playlist_id, state):
     """Return every track URI currently in a playlist, including duplicates."""
     uris = []
     url = f"{ctx.spotify_api_base}/playlists/{playlist_id}/items"
-    limit, offset = 100, 0
+    limit, offset = 50, 0
     while True:
         data = spotify_get(ctx, token, url, state, {"limit": limit, "offset": offset})
         items = data.get("items", [])
@@ -106,40 +113,161 @@ def remove_tracks_from_playlist(ctx, token, playlist_id, track_uris, state):
         spotify_request(ctx, "DELETE", token, url, state, json_data={"items": items})
 
 
-def prune_playlist(ctx, token, state, days, playlist_id):
-    """Remove tracks of aged-out or excluded albums from the playlist.
-    Tracks shared with a kept album are never removed."""
-    if not playlist_id:
-        return
-    cutoff = datetime.now() - timedelta(days=days)
-    removal_ids, keep_uris = [], set()
-    for album_id, album in state.known_albums.items():
-        if not album.added_to_playlist:
-            continue
-        release_date = parse_release_date(album.release_date)
-        aged_out = release_date is not None and release_date < cutoff
-        excluded = is_effectively_excluded(album)
-        if aged_out or excluded:
-            removal_ids.append(album_id)
+def remove_unfollowed_artists(ctx, token, state, followed_artist_ids, playlist_id):
+    """Remove state and playlist tracks for artists no longer followed.
+
+    Playlist tracks are removed before the artist/album state is deleted.
+    Tracks shared with a still-followed artist are preserved.
+    """
+    followed_artist_ids = set(followed_artist_ids)
+    stale_artist_ids = set(state.artists) - followed_artist_ids
+    stale_artist_ids.update(
+        album.artist_id for album in state.known_albums.values()
+        if album.artist_id and album.artist_id not in followed_artist_ids
+    )
+    # MusicBrainz prerelease entries are intentionally retained until their
+    # normal MusicBrainz/Spotify handoff logic consumes them. Unfollowing an
+    # artist removes Spotify album state, but does not discard MB entries.
+    if not stale_artist_ids:
+        return 0
+
+    stale_album_ids = [
+        album_id for album_id, album in state.known_albums.items()
+        if album.artist_id in stale_artist_ids
+    ]
+
+    if playlist_id:
+        keep_uris = {
+            uri
+            for album in state.known_albums.values()
+            if album.artist_id not in stale_artist_ids
+            for uri in (album.track_uris or [])
+        }
+        removal_uris = set()
+        for album_id in stale_album_ids:
+            album = state.known_albums[album_id]
+            if not album.added_to_playlist:
+                continue
+            track_uris = album.track_uris
+            if not track_uris:
+                track_uris = get_album_track_uris(ctx, token, album_id, state)
+            removal_uris.update(uri for uri in track_uris if uri not in keep_uris)
+
+        if removal_uris:
+            remove_tracks_from_playlist(ctx, token, playlist_id, sorted(removal_uris), state)
+
+    for album_id in stale_album_ids:
+        del state.known_albums[album_id]
+    for artist_id in stale_artist_ids:
+        state.artists.pop(artist_id, None)
+    state.musicbrainz_upcoming = {
+        rg_id: album
+        for rg_id, album in state.musicbrainz_upcoming.items()
+        if album.artist_id not in stale_artist_ids
+    }
+    if state.in_progress:
+        state.in_progress.due_ids = [
+            artist_id for artist_id in state.in_progress.due_ids
+            if artist_id not in stale_artist_ids
+        ]
+        state.in_progress.processed_ids = [
+            artist_id for artist_id in state.in_progress.processed_ids
+            if artist_id not in stale_artist_ids
+        ]
+    state_mod.save_state(ctx, state)
+    log(f"Removed {len(stale_album_ids)} album(s) for {len(stale_artist_ids)} unfollowed artist(s).")
+    return len(stale_album_ids)
+
+
+def _shared_track_guard(state, album_id):
+    """URIs of every other album still in the playlist. Used so a removal
+    never strips a track another album still needs."""
+    return {
+        uri
+        for other_id, other in state.known_albums.items()
+        if other_id != album_id and other.added_to_playlist
+        for uri in (other.track_uris or [])
+    }
+
+
+def _album_track_uris(ctx, token, album_id, state):
+    """Stored track URIs, falling back to a Spotify fetch. Returns None when
+    the tracks can't be read, so callers skip the album this pass."""
+    album = state.known_albums[album_id]
+    if album.track_uris:
+        return album.track_uris
+    try:
+        return get_album_track_uris(ctx, token, album_id, state)
+    except RateLimitError:
+        raise
+    except Exception as e:
+        log(f"  ERROR fetching tracks for '{album.name}': {e}")
+        return None
+
+
+def _retire_albums(ctx, token, state, days, playlist_id):
+    """Drop albums whose retention window has closed: remove their tracks
+    (keeping any a surviving album shares) and forget them entirely."""
+    retire_ids = [
+        album_id for album_id, album in state.known_albums.items()
+        if is_past_retention(album, days)
+    ]
+    for album_id in retire_ids:
+        album = state.known_albums[album_id]
+        was_promoted = is_promoted(album)
+        if album.added_to_playlist:
+            track_uris = _album_track_uris(ctx, token, album_id, state)
+            if track_uris is None:
+                continue
+            to_remove = [uri for uri in track_uris if uri not in _shared_track_guard(state, album_id)]
+            if to_remove:
+                try:
+                    remove_tracks_from_playlist(ctx, token, playlist_id, to_remove, state)
+                    log(f"  Removed {len(to_remove)} track(s) from retired '{album.name}'")
+                except RateLimitError:
+                    raise
+                except Exception as e:
+                    log(f"  ERROR removing retired '{album.name}' from playlist: {e}")
+                    continue
+        del state.known_albums[album_id]
+        state_mod.save_state(ctx, state)
+        if was_promoted:
+            log(f"  Retired '{album.name}' -- retention window closed, "
+                "even though it had been promoted.")
         else:
-            keep_uris.update(album.track_uris or [])
+            log(f"  Retired '{album.name}' -- past its retention window.")
+
+
+def _expire_albums(ctx, token, state, days, playlist_id):
+    """Move aged-out albums into the Expired stage: remove their tracks but
+    keep the entry so the dashboard can still list (and re-promote) it."""
+    removal_ids = [
+        album_id for album_id, album in state.known_albums.items()
+        if album.added_to_playlist and is_aged_out(album, days)
+    ]
     if not removal_ids:
         return
-    log(f"Pruning {len(removal_ids)} album(s) from playlist (aged-out or excluded)...")
+
+    keep_uris = {
+        uri
+        for album in state.known_albums.values()
+        if album.added_to_playlist and not is_aged_out(album, days)
+        for uri in (album.track_uris or [])
+    }
+    log(f"Expiring {len(removal_ids)} album(s) from the playlist (aged out or excluded)...")
+
     for album_id in removal_ids:
         album = state.known_albums[album_id]
-        track_uris = album.track_uris
-        if not track_uris:
-            try:
-                track_uris = get_album_track_uris(ctx, token, album_id, state)
-            except Exception as e:
-                log(f"  ERROR fetching tracks for '{album.name}' during prune: {e}")
-                continue
-        to_remove = [u for u in track_uris if u not in keep_uris]
+        track_uris = _album_track_uris(ctx, token, album_id, state)
+        if track_uris is None:
+            continue
+        to_remove = [uri for uri in track_uris if uri not in keep_uris]
         if to_remove:
             try:
                 remove_tracks_from_playlist(ctx, token, playlist_id, to_remove, state)
                 log(f"  Removed {len(to_remove)} track(s) from '{album.name}'")
+            except RateLimitError:
+                raise
             except Exception as e:
                 log(f"  ERROR removing '{album.name}' from playlist: {e}")
                 continue
@@ -147,6 +275,32 @@ def prune_playlist(ctx, token, state, days, playlist_id):
         album.track_uris = []
         state_mod.save_state(ctx, state)
 
+
+def prune_playlist(ctx, token, state, days, playlist_id):
+    """Retire albums past their retention window, then expire the ones that
+    just aged out. RateLimitError propagates so the caller can abort."""
+    if not playlist_id:
+        return
+    _retire_albums(ctx, token, state, days, playlist_id)
+    _expire_albums(ctx, token, state, days, playlist_id)
+
+
+def replace_playlist_contents(ctx, token, playlist_id, track_uris, state):
+    """Clear the current playlist once, then rebuild it without re-reading."""
+    url = f"{ctx.spotify_api_base}/playlists/{playlist_id}/items"
+    current_uris = get_playlist_track_uris(ctx, token, playlist_id, state)
+    if current_uris:
+        remove_tracks_from_playlist(ctx, token, playlist_id, current_uris, state)
+    # Deduplicate while preserving order to avoid introducing duplicates.
+    deduped = []
+    seen = set()
+    for uri in track_uris:
+        if uri not in seen:
+            deduped.append(uri)
+            seen.add(uri)
+    track_uris = deduped
+    for i in range(0, len(track_uris), 100):
+        spotify_request(ctx, "POST", token, url, state, json_data={"uris": track_uris[i:i + 100]})
 
 def reorder_playlist(ctx, token, state, playlist_id):
     """Reorders the playlist so tracks are sorted by album release date
@@ -167,23 +321,19 @@ def reorder_playlist(ctx, token, state, playlist_id):
     albums.sort(key=sort_key)
 
     ordered_uris = []
+    seen_uris = set()
     for album in albums:
-        ordered_uris.extend(album.track_uris or [])
+        for uri in album.track_uris or []:
+            if uri not in seen_uris:
+                ordered_uris.append(uri)
+                seen_uris.add(uri)
 
     if not ordered_uris:
         log("No playlisted tracks found to reorder.")
         return
 
-    # Rebuild from persisted album state, but fetch the existing playlist so
-    # the delete phase truly clears every item before the replacement is added.
-    current_uris = get_playlist_track_uris(ctx, token, playlist_id, state)
-
-    # Dev Mode apps can't PUT (replace) a playlist. Delete all current
-    # tracks then POST them back in the desired order.
     log(f"Reordering {len(ordered_uris)} track(s) from {len(albums)} album(s)...")
-    if current_uris:
-        remove_tracks_from_playlist(ctx, token, playlist_id, current_uris, state)
-    add_tracks_to_playlist(ctx, token, playlist_id, ordered_uris, state)
+    replace_playlist_contents(ctx, token, playlist_id, ordered_uris, state)
     log("Playlist reorder complete.")
 
 
@@ -206,10 +356,18 @@ def playlist_order_is_stale(ctx, token, state, playlist_id):
     seen_uris = set(observed_uris)
 
     expected_uris = []
+    expected_seen = set()
     for album in sorted(albums, key=sort_key):
         album_uris = album.track_uris or []
+        # Only albums represented in the current playlist participate in the
+        # canonical comparison. Once an album is present, all of its known
+        # tracks must be present too; this detects partial/missing albums while
+        # still ignoring albums that have not been added to Spotify yet.
         if any(uri in seen_uris for uri in album_uris):
-            expected_uris.extend(album_uris)
+            for uri in album_uris:
+                if uri not in expected_seen:
+                    expected_uris.append(uri)
+                    expected_seen.add(uri)
 
     return observed_uris != expected_uris
 

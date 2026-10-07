@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% block head %}<meta http-equiv="refresh" content="20">{% endblock %}
 {% block content %}
 
 <div class="card">
@@ -133,6 +132,47 @@
 
 <details class="card collapsible">
   <summary class="card-header">
+    <span class="material-symbols-outlined">inventory_2</span> Expired albums ({{ expired_albums|length }})
+    <span class="collapse-icon material-symbols-outlined">expand_more</span>
+  </summary>
+  <div class="card-body">
+    <p class="muted" style="margin-bottom: 1.25rem;">Albums stay here until their retention window closes (twice the configured age limit, minimum 30 days), then they are removed from the playlist and forgotten. Promoting an album puts it back in the main playlist and protects it from expiry, but not from retirement -- it is still dropped once the window closes.</p>
+    <div class="table-container">
+      <table class="excluded-table">
+        <thead><tr><th>Artist</th><th>Album</th><th>Released</th><th></th></tr></thead>
+        <tbody>
+          {% for a in expired_albums %}
+          <tr>
+            <td>{{ a.artist }}</td>
+            <td><a href="{{ a.url }}" target="_blank" style="font-weight: 500;">{{ a.name }}</a></td>
+            <td>{{ a.release_date }}</td>
+            <td>
+              {% if a.added_to_playlist %}
+              <form method="post" action="{{ url_for('return_album_to_expired', album_id=a.id) }}" style="display:inline">
+                <button class="btn small secondary" type="submit">Remove from playlist</button>
+              </form>
+              {% else %}
+              <form class="promote-form" method="post" action="{{ url_for('promote_expired_album', album_id=a.id) }}" data-album-id="{{ a.id }}" style="display:inline">
+                {% set promote_status = promote_statuses.get(a.id, {}).get('status') %}
+                <button class="btn small" type="submit" {% if promote_status in ['queued', 'running'] %}disabled{% endif %}>
+                  <span class="material-symbols-outlined" style="font-size: 14px;">{% if promote_status in ['queued', 'running'] %}hourglass_empty{% else %}north{% endif %}</span>
+                  <span class="promote-label">{% if promote_status == 'queued' %}Queued…{% elif promote_status == 'running' %}Promoting…{% else %}Promote{% endif %}</span>
+                </button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="muted" style="text-align: center;">No expired albums.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</details>
+
+<details class="card collapsible">
+  <summary class="card-header">
     <span class="material-symbols-outlined">block</span> Excluded albums ({{ excluded_albums|length }})
     <span class="collapse-icon material-symbols-outlined">expand_more</span>
   </summary>
@@ -167,67 +207,85 @@
   </div>
 </details>
 
-<details class="card collapsible" open>
-  <summary class="card-header">
-    <span class="material-symbols-outlined">history</span> Recent activity
-    <span class="collapse-icon material-symbols-outlined">expand_more</span>
-  </summary>
-  <div class="card-body">
-    <div class="log-feed" id="log-feed">
-      {% for line in logs %}
-      <div class="log-entry" data-raw="{{ line|e }}">
-        <div class="log-entry-content">
-          <span class="log-message">{{ line }}</span>
-        </div>
-      </div>
-      {% else %}
-      <div class="log-empty">No activity yet -- run a scan to see logs here.</div>
-      {% endfor %}
-    </div>
-  </div>
-</details>
-
 <p class="footer-text">version {{ version }}</p>
 {% endblock %}
 
+
 {% block scripts %}
 <script>
-  (function() {
-    var feed = document.getElementById('log-feed');
-    if (!feed) return;
+(() => {
+  const activeStates = new Set(['queued', 'running']);
 
-    var entries = feed.querySelectorAll('.log-entry');
-    entries.forEach(function(entry) {
-      var raw = entry.getAttribute('data-raw') || '';
-      var match = raw.match(/^(\d{2}:\d{2}:\d{2})\s+(.*)/);
-      var timestamp = match ? match[1] : '';
-      var message = match ? match[2] : raw;
+  function setButton(form, state) {
+    const button = form.querySelector('button');
+    const label = form.querySelector('.promote-label');
+    const icon = form.querySelector('.material-symbols-outlined');
+    if (!button || !label || !icon) return;
 
-      var type = 'info';
-      var lower = message.toLowerCase();
-      if (/rate limiter: waiting/.test(lower)) {
-        type = 'info';
-      } else if (/error|fail|exception|rate.limit|denied|\b5\d\d\b/.test(lower)) {
-        type = 'error';
-      } else if (/warn|warning/.test(lower)) {
-        type = 'warn';
-      } else if (/success|added|connected|completed|saved|done|created/.test(lower)) {
-        type = 'success';
+    if (state === 'queued') {
+      button.disabled = true;
+      icon.textContent = 'hourglass_empty';
+      label.textContent = 'Queued…';
+    } else if (state === 'running') {
+      button.disabled = true;
+      icon.textContent = 'hourglass_empty';
+      label.textContent = 'Promoting…';
+    } else if (state === 'completed') {
+      button.disabled = false;
+      button.classList.add('secondary');
+      icon.textContent = 'remove';
+      label.textContent = 'Remove from playlist';
+      form.action = "{{ url_for('return_album_to_expired', album_id='__ALBUM_ID__') }}".replace('__ALBUM_ID__', form.dataset.albumId);
+      form.dataset.promoteDone = 'true';
+      form.classList.remove('promote-form');
+    } else if (state === 'failed') {
+      button.disabled = false;
+      icon.textContent = 'refresh';
+      label.textContent = 'Retry promote';
+    }
+  }
+
+  async function poll(form) {
+    const albumId = form.dataset.albumId;
+    try {
+      const response = await fetch('/albums/' + encodeURIComponent(albumId) + '/promote/status', {cache: 'no-store'});
+      if (!response.ok) return;
+      const result = await response.json();
+      setButton(form, result.status);
+      if (activeStates.has(result.status)) {
+        window.setTimeout(() => poll(form), 750);
       }
+    } catch (_) {
+      window.setTimeout(() => poll(form), 1500);
+    }
+  }
 
-      var iconMap = {
-        info: 'info',
-        success: 'check_circle',
-        warn: 'warning',
-        error: 'error'
-      };
+  document.querySelectorAll('.promote-form').forEach((form) => {
+    const button = form.querySelector('button');
+    if (button.disabled) poll(form);
 
-      entry.classList.add('log-' + type);
-      entry.innerHTML =
-        '<span class="log-timestamp">' + timestamp + '</span>' +
-        '<span class="log-icon material-symbols-outlined">' + (iconMap[type] || 'info') + '</span>' +
-        '<span class="log-message">' + message + '</span>';
+    form.addEventListener('submit', async (event) => {
+      if (form.dataset.promoteDone === 'true') return;
+      event.preventDefault();
+      if (button.disabled) return;
+      setButton(form, 'queued');
+      try {
+        const response = await fetch(form.action, {
+          method: 'POST',
+          headers: {'X-Requested-With': 'XMLHttpRequest'}
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          setButton(form, 'failed');
+          return;
+        }
+        setButton(form, result.status);
+        if (activeStates.has(result.status)) poll(form);
+      } catch (_) {
+        setButton(form, 'failed');
+      }
     });
-  })();
+  });
+})();
 </script>
 {% endblock %}

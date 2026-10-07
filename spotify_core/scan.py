@@ -13,17 +13,36 @@ from datetime import datetime, timedelta, timezone
 from .api import (
     ARTIST_ALBUMS_CATEGORY,
     DEFAULT_MIN_REQUEST_INTERVAL_SECONDS,
+    FOLLOWED_ARTISTS_CATEGORY,
     RateLimitError,
     blocked_until,
 )
 from .artists import get_artist_albums, get_due_artists, get_followed_artists
 from .auth import get_access_token, load_refresh_token
 from .config import CHECK_INTERVAL_DAYS, DEFAULT_DAYS_LOOKBACK, get_version, load_config
-from .filters import is_auto_excluded, is_effectively_excluded, parse_release_date
+from .filters import (
+    is_auto_excluded,
+    is_effectively_excluded,
+    is_promoted,
+    parse_release_date,
+    retention_days,
+)
 from .logging import clear_logs, log, log_exception
 from .models import Album, Artist, MusicBrainzAlbum, ScanProgress
-from .musicbrainz import MB_ACTIVE_REFRESH_DAYS, get_artist_status_and_release_groups, resolve_spotify_to_mb
-from .playlists import add_tracks_to_playlist, get_album_track_uris, playlist_order_is_stale, prune_playlist, reorder_playlist
+from .musicbrainz import (
+    MB_ACTIVE_REFRESH_DAYS,
+    MusicBrainzThrottled,
+    get_artist_status_and_release_groups,
+    resolve_spotify_to_mb,
+)
+from .playlists import (
+    add_tracks_to_playlist,
+    get_album_track_uris,
+    playlist_order_is_stale,
+    prune_playlist,
+    remove_unfollowed_artists,
+    reorder_playlist,
+)
 from .state import clear_expired_rate_limits, load_state, save_state, update_state
 
 # Serializes scan runs so the scheduler and a manual "Run now" click can
@@ -187,6 +206,16 @@ def run_scan(ctx, days=None, interval_days=None, min_request_interval=None, mark
         blocked_categories = []
 
         artists = _fetch_followed_artists(ctx, token, state, blocked_categories)
+        if FOLLOWED_ARTISTS_CATEGORY not in blocked_categories:
+            try:
+                remove_unfollowed_artists(
+                    ctx, token, state, {a["id"] for a in artists}, playlist_id
+                )
+            except RateLimitError as e:
+                log(f"Skipping unfollowed-artist cleanup -- {e.category} rate-limited.")
+                blocked_categories.append(e.category)
+            except Exception as e:
+                log(f"Skipping unfollowed-artist cleanup: {e}")
         any_new_albums = False
         if artists:
             if verbose:
@@ -281,13 +310,24 @@ def _mb_classify_and_order(ctx, state, artists, days_lookback, total_count, inte
     now_utc_iso = datetime.now(timezone.utc).isoformat()
     classified = 0
     resolved = 0
+    throttled = False
 
     for artist in artists:
         artist_id = artist["id"]
         entry = state.artists.get(artist_id)
         mbid = entry.musicbrainz_id if entry else ""
         if not mbid:
-            mbid = resolve_spotify_to_mb(artist_id)
+            try:
+                mbid = resolve_spotify_to_mb(artist_id)
+            except MusicBrainzThrottled:
+                # Stop the whole pass: MusicBrainz's circuit breaker has
+                # already paused requests, and hammering it during an outage
+                # is what gets an application blocked. Nothing below is cached
+                # from this pass, so the next run redoes it cleanly.
+                log(f"MB: throttled while resolving {artist['name']} -- "
+                    "ending MusicBrainz pass for this run")
+                throttled = True
+                break
             if not mbid:
                 continue
             if entry is None:
@@ -304,6 +344,11 @@ def _mb_classify_and_order(ctx, state, artists, days_lookback, total_count, inte
 
         try:
             active, release_groups = get_artist_status_and_release_groups(ctx, mbid)
+        except MusicBrainzThrottled:
+            log(f"MB: throttled while checking {artist['name']} -- "
+                "ending MusicBrainz pass for this run")
+            throttled = True
+            break
         except Exception as e:
             log(f"MB: lookup failed for {artist['name']}: {e}")
             continue
@@ -353,7 +398,8 @@ def _mb_classify_and_order(ctx, state, artists, days_lookback, total_count, inte
             skip.add(artist_id)
 
     log(f"MB: classified {classified}/{len(artists)} artist(s) "
-        f"({resolved} newly resolved, {len(skip)} skipped, {len(hits_seen)} hit(s)).")
+        f"({resolved} newly resolved, {len(skip)} skipped, {len(hits_seen)} hit(s))"
+        f"{'; pass ended early - MusicBrainz throttled us' if throttled else ''}.")
     hits.sort(key=lambda h: h[0])
     ordered_ids = [aid for _, aid in hits]
     ordered_ids += [a["id"] for a in artists if a["id"] not in hits_seen]
@@ -419,7 +465,8 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
     skip_ids = set(skip_ids or ())
     cfg = load_config(ctx)
     verbose = cfg.get("verbose_logging", False)
-    cutoff = datetime.now() - timedelta(days=days)
+    now = datetime.now()
+    cutoff = now - timedelta(days=days)
     now_iso = datetime.now(timezone.utc).isoformat()
     any_new_albums = False
     try:
@@ -460,7 +507,7 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
 
             log(f"    Retrieved {len(albums)} album(s)")
             new_count = _record_new_albums(ctx, token, state, artist, albums, cutoff,
-                                           playlist_id, now_iso)
+                                           playlist_id, now_iso, days, now)
             if _remove_checked_musicbrainz_upcoming(state, artist):
                 save_state(ctx, state)
             if new_count:
@@ -485,8 +532,22 @@ def _process_artists(ctx, token, state, plan, days, market, playlist_id, blocked
     return any_new_albums
 
 
-def _record_new_albums(ctx, token, state, artist, albums, cutoff, playlist_id, now_iso):
+def _record_new_albums(ctx, token, state, artist, albums, cutoff, playlist_id, now_iso,
+                      days_lookback=DEFAULT_DAYS_LOOKBACK, now=None):
+    """Record the albums returned for one artist.
+
+    An album is skipped outright once its retention window has closed. One that
+    has already aged out is recorded but not pushed to the playlist, unless it
+    is still promoted -- in which case the add is retried here, so a promotion
+    whose playlist sync failed heals on the next scan.
+    """
     new_count = 0
+    # ``cutoff`` is already ``now - days_lookback``, so retention has to be
+    # measured from ``now``: ``now - retention_days(...)``, not
+    # ``cutoff - retention_days(...)`` (which would charge the age limit twice).
+    if now is None:
+        now = cutoff + timedelta(days=days_lookback)
+    retention_cutoff = now - timedelta(days=retention_days(days_lookback))
     for album in albums:
         if album["album_type"] != "album":
             continue
@@ -494,13 +555,17 @@ def _record_new_albums(ctx, token, state, artist, albums, cutoff, playlist_id, n
         if artist["id"] not in artist_ids:
             continue
         release_date = parse_release_date(album["release_date"])
-        if release_date and release_date < cutoff:
+        if release_date and release_date < retention_cutoff:
             continue
 
         is_unreleased = release_date and release_date.date() > datetime.now().date()
 
         existing_entry = state.known_albums.get(album["id"])
-        needs_playlist_add = existing_entry is None or not existing_entry.added_to_playlist
+        not_yet_added = existing_entry is None or not existing_entry.added_to_playlist
+        aged_out = release_date is not None and release_date < cutoff
+        was_promoted = existing_entry is not None and is_promoted(existing_entry)
+        needs_playlist_add = not_yet_added and (not aged_out or was_promoted)
+
         prerelease_exclusion = _matching_prerelease_exclusion(state, artist, album)
         record_album(state, artist, album, now_iso)
         entry = state.known_albums[album["id"]]

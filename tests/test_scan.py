@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 
 import spotify_core as core
 from spotify_core.api import ARTIST_ALBUMS_CATEGORY
+from spotify_core.musicbrainz import MusicBrainzThrottled
 from spotify_core.models import Album, Artist, MusicBrainzAlbum, ScanProgress, State
 from spotify_core.scan import (
     get_due_artists, record_album, _plan_artists, _mb_classify_and_order,
@@ -456,6 +457,37 @@ class MbClassifyAndOrderTests(unittest.TestCase):
         self.assertEqual(skip, {"a1"})
         self.assertFalse(state.artists["a1"].mb_active)
 
+    def test_throttled_lookup_is_not_cached_as_active(self):
+        """A 503 means MusicBrainz refused us, not that the artist is active.
+
+        Caching it as verified-active would suppress re-checks for the whole
+        MB_ACTIVE_REFRESH_DAYS window.
+        """
+        state = State(artists={
+            "a1": Artist(id="a1", name="A", musicbrainz_id="mb-123"),
+        })
+        artists = [self._artist("a1", "A"), self._artist("a2", "B")]
+        with patch("spotify_core.scan.get_artist_status_and_release_groups",
+                   side_effect=MusicBrainzThrottled("503")) as mock_status, \
+             patch("spotify_core.scan.resolve_spotify_to_mb"):
+            ordered, skip = _mb_classify_and_order(MagicMock(), state, artists, 365, 10, 7)
+        self.assertEqual(mock_status.call_count, 1, "pass should end on the first throttle")
+        self.assertEqual(skip, set())
+        entry = state.artists["a1"]
+        self.assertEqual(entry.mb_active_checked, "",
+                         "a throttled lookup must not record a check time")
+        self.assertEqual(ordered, ["a1", "a2"], "artists still go to Spotify")
+
+    def test_throttled_resolve_is_not_cached_as_a_mbid(self):
+        state = State()
+        artists = [self._artist("a1", "A")]
+        with patch("spotify_core.scan.resolve_spotify_to_mb",
+                   side_effect=MusicBrainzThrottled("503")):
+            ordered, skip = _mb_classify_and_order(MagicMock(), state, artists, 365, 10, 7)
+        self.assertNotIn("a1", state.artists)
+        self.assertEqual(skip, set())
+        self.assertEqual(ordered, ["a1"])
+
     def test_stale_inactive_recheck_flips_to_active(self):
         stale = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
         state = State(artists={
@@ -801,3 +833,52 @@ class RunScanWiringTests(ContextTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class RecordNewAlbumsRetentionTests(ContextTestCase):
+    """Scan-time classification must agree with prune-time classification:
+    retention is measured from now (2x the age limit, floored at 30 days), not
+    from the already-aged cutoff."""
+
+    DAYS = 365
+    RETENTION = 730
+
+    def _record(self, albums, days_lookback=None):
+        days = days_lookback or self.DAYS
+        now = datetime.now()
+        state = State()
+        with patch("spotify_core.scan.get_album_track_uris", return_value=[]), \
+             patch("spotify_core.scan.add_tracks_to_playlist"):
+            core.scan._record_new_albums(
+                self.ctx, "token", state, artist_payload("art1", "Artist"),
+                albums, now - timedelta(days=days), None,
+                "2026-09-29T00:00:00+00:00", days, now,
+            )
+        return state
+
+    def _age(self, days):
+        return (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    def test_album_just_inside_retention_is_recorded(self):
+        """Regression: retention must not be charged twice. This album is past
+        the age limit but inside 2x it, so prune still tracks it."""
+        state = self._record([album_payload("sp1", "Inside Retention", self._age(600))])
+        self.assertIn("sp1", state.known_albums)
+
+    def test_album_past_retention_is_skipped(self):
+        state = self._record([album_payload("sp1", "Too Old", self._age(800))])
+        self.assertNotIn("sp1", state.known_albums)
+
+    def test_retention_floor_applies_for_small_age_limits(self):
+        """With a 5-day age limit retention is still 30 days."""
+        state = self._record([album_payload("sp1", "Twenty Days Old", self._age(20))],
+                             days_lookback=5)
+        self.assertIn("sp1", state.known_albums)
+
+        state = self._record([album_payload("sp2", "Forty Days Old", self._age(40))],
+                             days_lookback=5)
+        self.assertNotIn("sp2", state.known_albums)
+
+    def test_aged_out_album_is_recorded_but_not_added(self):
+        state = self._record([album_payload("sp1", "Aged Out", self._age(400))])
+        self.assertIn("sp1", state.known_albums)
+        self.assertFalse(state.known_albums["sp1"].added_to_playlist)

@@ -5,12 +5,13 @@ APScheduler background thread are only created by ``create_app()``
 (called from ``wsgi.py`` under gunicorn, or the ``__main__`` guard below).
 """
 
+import html
 import os
 import re
 import secrets
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import spotify_core as core
@@ -172,7 +173,8 @@ def create_app():
             connected=core.is_connected(),
             playlist_id=c["spotify_playlist_id"],
             report_albums=core.get_report_albums(state, c["days_lookback"]),
-            excluded_albums=core.get_excluded_albums(state),
+            excluded_albums=core.get_excluded_albums(state, c["days_lookback"]),
+            expired_albums=core.get_expired_albums(state, c["days_lookback"]),
             in_progress=state.in_progress,
             rate_limits={
                 cat: format_rate_limit_until(ts)
@@ -180,11 +182,38 @@ def create_app():
             },
             artists_tracked=len(state.artists),
             known_albums_count=len(state.known_albums),
-            logs=core.get_recent_logs()[-80:],
+
             scan_running=core.run_lock.locked(),
             reorder_running=core.reorder_lock.locked(),
+            promote_statuses=playlists.promote_statuses(),
             now=datetime.now(timezone.utc),
             version=core.get_version(),
+        )
+
+    # --- Activity -----------------------------------------------------------------
+
+    @app.route("/activity")
+    def activity():
+        if not core.is_configured():
+            return redirect(url_for("settings"))
+        return render_template("activity.html", logs=core.get_recent_logs()[-80:], version=core.get_version())
+
+    @app.route("/activity/download")
+    def activity_download():
+        if not core.is_configured():
+            return redirect(url_for("settings"))
+        logs = core.get_recent_logs()
+        body = "\n".join(logs)
+        if body:
+            body += "\n"
+        return Response(
+            body,
+            mimetype="text/plain",
+            headers={
+                "Content-Disposition": 'attachment; filename="spotify-recent-albums-detailed.log"',
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     # --- OAuth -------------------------------------------------------------------
@@ -202,7 +231,7 @@ def create_app():
     def callback():
         error = request.args.get("error")
         if error:
-            return f"Spotify authorization failed: {error}", 400
+            return f"Spotify authorization failed: {html.escape(error)}", 400
 
         if request.args.get("state") != session.get("oauth_state"):
             return "State mismatch -- possible CSRF, please try /login again.", 400
@@ -252,6 +281,34 @@ def create_app():
         known = core.apply_musicbrainz_override(release_group_id, value)
         if not known:
             return "Unknown MusicBrainz release", 404
+        return redirect(url_for("dashboard"))
+
+    @app.route("/albums/<album_id>/promote", methods=["POST"])
+    def promote_expired_album(album_id):
+        # The dashboard uses AJAX so the page stays in place while the
+        # background worker performs the playlist mutation. Keep the plain
+        # form submission synchronous as a non-JavaScript fallback.
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            status, result = playlists.promote_expired_async(album_id)
+            return jsonify(result), status
+
+        status, error = playlists.promote_expired(album_id)
+        if status is not None:
+            return error, status
+        return redirect(url_for("dashboard"))
+
+    @app.route("/albums/<album_id>/promote/status")
+    def promote_expired_album_status(album_id):
+        status = playlists.promote_status(album_id)
+        if status is None:
+            return jsonify({"status": "unknown"}), 404
+        return jsonify(status)
+
+    @app.route("/albums/<album_id>/expire", methods=["POST"])
+    def return_album_to_expired(album_id):
+        status, error = playlists.return_to_expired(album_id)
+        if status is not None:
+            return error, status
         return redirect(url_for("dashboard"))
 
     # --- Followed Artists --------------------------------------------------------
@@ -359,9 +416,20 @@ def create_app():
                     mbid = core.resolve_spotify_to_mb(artist_id)
                     if mbid:
                         ctx = core.get_context()
-                        mb_active = core.get_artist_active(mbid)
-                        mb_release_groups = core.get_artist_release_groups(ctx, mbid)
-                        mb_upcoming = core.get_albums_with_future_dates(ctx, mbid)
+                        # One paginated call gets both status and release-groups;
+                        # separate get_artist_active + get_artist_release_groups +
+                        # get_albums_with_future_dates meant three round trips,
+                        # two of them to the same endpoint re-fetching the same
+                        # pages -- all of it against the 1/sec IP budget.
+                        mb_active, mb_release_groups = (
+                            core.get_artist_status_and_release_groups(ctx, mbid)
+                        )
+                        today = datetime.now().strftime("%Y-%m-%d")
+                        mb_upcoming = [
+                            rg for rg in mb_release_groups
+                            if rg.get("first-release-date", "") > today
+                        ]
+                        upcoming_ids = {u.get("id") for u in mb_upcoming}
                         mb_albums = []
                         for rg in mb_release_groups:
                             mb_albums.append({
@@ -369,7 +437,7 @@ def create_app():
                                 "name": rg.get("title"),
                                 "primary_type": rg.get("primary-type"),
                                 "release_date": rg.get("first-release-date", ""),
-                                "is_upcoming": rg.get("id", "") in {u.get("id") for u in mb_upcoming},
+                                "is_upcoming": rg.get("id", "") in upcoming_ids,
                                 "url": f"https://musicbrainz.org/release-group/{rg.get('id')}",
                             })
                         mb_info = {
@@ -429,6 +497,14 @@ def create_app():
 
 # --- Scheduler ---------------------------------------------------------------
 
+# MusicBrainz asks applications not to wake up at the same instant every day:
+# deployments that all fire at the top of the hour pile onto the same second and
+# overload the service, which is grounds for blocking. The cron expression is
+# still the user's, but each run is delayed by a random amount up to this many
+# seconds so instances spread out instead of marching in step.
+SCHEDULE_JITTER_SECONDS = int(os.environ.get("SCHEDULE_JITTER_SECONDS", "900"))
+
+
 def _start_scheduler():
     if os.environ.get("RUN_SCHEDULER", "1") != "1":
         return
@@ -443,6 +519,7 @@ def _start_scheduler():
         core.log(f"Invalid cron schedule {cron_expr!r}; using default 0 6 * * *")
         minute, hour, day, month, dow = "0", "6", "*", "*", "*"
 
+    jitter = max(0, SCHEDULE_JITTER_SECONDS)
     scheduler = BackgroundScheduler(timezone="UTC")
     scheduler.add_job(
         lambda: core.run_scan(
@@ -450,10 +527,19 @@ def _start_scheduler():
             interval_days=cfg()["interval_days"],
             min_request_interval=cfg()["min_request_interval"],
         ),
-        trigger=CronTrigger(minute=minute, hour=hour, day=day, month=month, day_of_week=dow),
+        trigger=CronTrigger(
+            minute=minute,
+            hour=hour,
+            day=day,
+            month=month,
+            day_of_week=dow,
+            jitter=jitter,
+        ),
+        replace_existing=True,
     )
     scheduler.start()
-    core.log(f"Scheduler started (cron: {cron_expr} UTC)")
+    core.log(f"Scheduler started (cron: {cron_expr} UTC"
+             f"{f', jitter up to {jitter}s' if jitter else ''})")
 
 
 if __name__ == "__main__":

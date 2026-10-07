@@ -6,6 +6,11 @@ from .filters import is_effectively_excluded, is_expired, parse_release_date
 from .models import Album
 
 
+def _release_date_sort_key(album):
+    """Release date as a datetime, missing/unparseable dates sort oldest."""
+    return parse_release_date(album.release_date) or datetime.min
+
+
 def get_report_albums(state, days):
     cutoff = datetime.now() - timedelta(days=days)
     result = []
@@ -35,12 +40,8 @@ def get_report_albums(state, days):
         mb_albums.append(mb_album)
 
     # Keep MusicBrainz upcoming albums grouped first, with both groups newest-date first.
-    def _sort_key(a):
-        d = parse_release_date(a.release_date)
-        return d if d is not None else datetime.min
-
-    mb_albums.sort(key=_sort_key, reverse=True)
-    result.sort(key=_sort_key, reverse=True)
+    mb_albums.sort(key=_release_date_sort_key, reverse=True)
+    result.sort(key=_release_date_sort_key, reverse=True)
     return mb_albums + result
 
 
@@ -51,15 +52,15 @@ def get_excluded_albums(state, days):
         a for a in state.known_albums.values()
         if is_effectively_excluded(a) and not is_expired(a, days)
     ]
-    result.sort(key=lambda a: a.release_date or "", reverse=True)
+    result.sort(key=_release_date_sort_key, reverse=True)
     return result
 
 
 def get_expired_albums(state, days):
     """Albums that have aged out of the playlist but are still inside their
-    retention window, oldest first."""
+    retention window, newest release date first."""
     result = [a for a in state.known_albums.values() if is_expired(a, days)]
-    result.sort(key=lambda a: parse_release_date(a.release_date))
+    result.sort(key=_release_date_sort_key, reverse=True)
     return result
 
 

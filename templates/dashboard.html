@@ -181,13 +181,14 @@
     <div class="table-container">
       <table class="excluded-table">
         <thead>
-          <tr><th>Artist</th><th>Album</th><th>Reason</th><th></th></tr>
+          <tr><th>Artist</th><th>Album</th><th>Released</th><th>Reason</th><th></th></tr>
         </thead>
         <tbody>
           {% for a in excluded_albums %}
           <tr>
             <td>{{ a.artist }}</td>
             <td><a href="{{ a.url }}" target="_blank" style="font-weight: 500;">{{ a.name }}</a></td>
+            <td>{{ a.release_date }}</td>
             <td class="muted">{% if a.manual_override %}manual{% else %}auto (parenthetical){% endif %}</td>
             <td>
               <form method="post" action="{{ url_for('set_override', album_id=a.id) }}" style="display:inline">
@@ -199,7 +200,7 @@
             </td>
           </tr>
           {% else %}
-          <tr><td colspan="4" class="muted" style="text-align: center;">None.</td></tr>
+          <tr><td colspan="5" class="muted" style="text-align: center;">None.</td></tr>
           {% endfor %}
         </tbody>
       </table>

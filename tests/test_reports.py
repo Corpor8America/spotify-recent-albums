@@ -95,6 +95,24 @@ class GetExcludedAlbumsTests(unittest.TestCase):
         self.assertEqual([a.id for a in get_excluded_albums(state, 365)], ["recent"])
         self.assertEqual([a.id for a in get_expired_albums(state, 365)], ["expired"])
 
+    def test_sorted_newest_first(self):
+        state = state_with(
+            make_album("older", "Older (Live)", _days_ago(90), auto_excluded=True),
+            make_album("newer", "Newer (Live)", _days_ago(10), auto_excluded=True),
+        )
+        self.assertEqual(
+            [a.id for a in get_excluded_albums(state, 365)], ["newer", "older"]
+        )
+
+    def test_missing_release_date_sorts_last(self):
+        state = state_with(
+            make_album("undated", "Undated (Live)", "", auto_excluded=True),
+            make_album("dated", "Dated (Live)", _days_ago(10), auto_excluded=True),
+        )
+        self.assertEqual(
+            [a.id for a in get_excluded_albums(state, 365)], ["dated", "undated"]
+        )
+
 
 class GetExpiredAlbumsTests(unittest.TestCase):
     def test_lists_only_albums_inside_the_retention_window(self):
@@ -105,12 +123,12 @@ class GetExpiredAlbumsTests(unittest.TestCase):
         )
         self.assertEqual([a.id for a in get_expired_albums(state, 365)], ["expired"])
 
-    def test_sorted_oldest_first(self):
+    def test_sorted_newest_first(self):
         state = state_with(
-            make_album("newer", "Newer", _days_ago(400)),
             make_album("older", "Older", _days_ago(600)),
+            make_album("newer", "Newer", _days_ago(400)),
         )
-        self.assertEqual([a.id for a in get_expired_albums(state, 365)], ["older", "newer"])
+        self.assertEqual([a.id for a in get_expired_albums(state, 365)], ["newer", "older"])
 
     def test_promoted_albums_remain_listed(self):
         state = state_with(
@@ -130,9 +148,9 @@ class GetExpiredAlbumsTests(unittest.TestCase):
             make_album("c", "C", _days_ago(31)),
         )
         # lookback 1 day -> retention floors to 30 days, so "c" is already
-        # retired while "a" and "b" are expired (oldest first).
-        self.assertEqual([a.id for a in get_expired_albums(state, 1)], ["b", "a"])
-        self.assertEqual([a.id for a in get_expired_albums(state, 0)], ["b", "a"])
+        # retired while "a" and "b" are expired (newest first).
+        self.assertEqual([a.id for a in get_expired_albums(state, 1)], ["a", "b"])
+        self.assertEqual([a.id for a in get_expired_albums(state, 0)], ["a", "b"])
 
 
 class GetUpcomingAlbumsTests(unittest.TestCase):
